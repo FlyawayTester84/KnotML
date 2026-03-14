@@ -5,11 +5,17 @@ from unknot_rl.envs.unknot_env import UnknotEnv
 
 def test_env_reset_and_step():
     env = UnknotEnv(seed=0)
-    obs = env.reset()
-    assert isinstance(obs, dict)
+    obs, info = env.reset()
 
-    obs2, reward, done, info = env.step(0)
-    assert isinstance(obs2, dict)
-    assert isinstance(reward, float)
-    assert isinstance(done, bool)
+    assert isinstance(obs, dict)
+    assert "adj" in obs and "node" in obs
+    assert obs["adj"].shape[0] == obs["adj"].shape[1]
     assert isinstance(info, dict)
+
+    obs2, reward, terminated, truncated, info2 = env.step(0)
+    assert isinstance(obs2, dict)
+    assert "adj" in obs2 and "node" in obs2
+    assert isinstance(reward, float)
+    assert isinstance(terminated, bool)
+    assert isinstance(truncated, bool)
+    assert isinstance(info2, dict)
