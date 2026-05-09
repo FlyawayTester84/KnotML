@@ -14,7 +14,7 @@ class Knot:
     """A simple knot representation.
 
     Uses PD codes to represent knots
-    Each crossing is represented by a 4-tuple of strand indices.\
+    Each crossing is represented by a 4-tuple of strand indices.
     """
 
     crossings: List[Tuple[int, int, int, int]]
