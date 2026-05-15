@@ -45,17 +45,28 @@ class Knot:
     def reidemeister_I(self, crossing_idx: int) -> None:
         """
         R1 Move
+
+        Input: self, arc, crossing sign
+        Output: PD code representing a link after the specified R-move
         """
         raise NotImplementedError
 
     def reidemeister_II(self, idx_a: int, idx_b: int) -> None:
         """
         R2 Move
+
+        Input: self, idx_a: over arc, idx_b: under arc
+        Output: (if arcs are compatible, ie share a face) PD code representing a link after the specified R-move
         """
         raise NotImplementedError
 
     def reidemeister_III(self, idx_a: int, idx_b: int, idx_c: int) -> None:
-        """R3 Move"""
+        """
+        R3 Move
+
+        Input: self, idx_a: arc, idx_b: arc, idx_c: arc
+        Output: (if arcs satisfy succession condition c.f. Mastin) PD code representing a link after the specified R-move
+        """
         raise NotImplementedError
 
 def generate_random_knot(crossings: int = 5) -> Knot:
