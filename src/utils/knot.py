@@ -21,6 +21,9 @@ class Knot:
     crossings: List[Tuple[int, int, int, int]]
     signs: List[int]
 
+    def __init__(self, array):
+        pass
+
     def to_graph(self) -> dict:
         """
         
