@@ -22,7 +22,14 @@ class Knot:
     signs: List[int]
 
     def __init__(self, array):
-        pass
+        """
+
+        Initialize a knot diagram as a planar diagram code
+
+        Input: An array of 4-tuples [(),(),(),]
+        (subject to conditions in Mastin - PD Codes...)
+        """
+        raise NotImplementedError
 
     def to_graph(self) -> dict:
         """
