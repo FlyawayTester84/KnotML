@@ -20,3 +20,6 @@ venv/
 
 # Jupyter
 .ipynb_checkpoints/
+
+# Generated drawings and traces
+outputs/
