@@ -1,8 +1,9 @@
 # Framed links and Kirby moves: design notes
 
-*2026-10-10. Implements item 2 of section 3 in `research-summary.md`
-(`src/knotml/kirby.py`). Dotted circles and handle cancellations are not
-implemented yet.*
+*2026-10-10. Implements item 2 of section 3 in `research-summary.md`:
+3-manifold surgery calculus in `src/knotml/kirby.py` (`FramedLink`) and
+4-manifold handlebody calculus in `src/knotml/handlebody.py` (`Handlebody`).
+They share the handle-slide construction (`band_slide`).*
 
 ## Data model
 
@@ -40,11 +41,10 @@ implemented yet.*
 | `BLOW_DOWN(a)` | label | `a` crossingless, framing ±1 (3-manifold calculus) | O(1) |
 | `HANDLE_SLIDE(a, b)` | sides on K_i and K_j | different components; same face or different pieces (the `R2_ADD` rule) | O(n + \|f_j − w_j\|) |
 
-`calculus="4-manifold"` drops blow-ups and blow-downs, which change the
-4-manifold by #±CP². By Kirby's theorem the full set is complete for
-3-manifolds, and slides plus isotopy are complete for 2-handlebodies. Split
-blow-downs suffice: a ±1 unknot linked with other strands can first be freed
-by sliding those strands off it.
+By Kirby's theorem this set is complete for 3-manifolds. Split blow-downs
+suffice: a ±1 unknot linked with other strands can first be freed by sliding
+those strands off it. Blow-ups change the 4-manifold by #±CP², so the
+4-manifold calculus lives in `Handlebody` instead (below).
 
 ### Handle slide construction (`kirby.py`)
 
@@ -85,10 +85,116 @@ by sliding those strands off it.
 - **Framing convention.** +1 surgery on the trefoil has trivial H₁; the
   blackboard convention would give Z/4.
 
+## 4-manifolds: `Handlebody` (`handlebody.py`)
+
+- **Data.** `LinkDiagram` + `{label: framing}` for 2-handles + a set of dotted
+  labels (1-handles, Akbulut's dotted-circle notation). Dotted circles must
+  form an unlink: the constructor checks pairwise linking numbers, and every
+  move preserves the unlink. `closed=True` adds implicit 3- and 4-handles.
+- **Invariants.**
+  - χ = 1 − #1-handles + #2-handles.
+  - The boundary map ∂ (rows: dotted circles, columns: 2-handles) has entries
+    lk(K, D).
+  - H₁(X) = coker ∂, by Smith normal form.
+  - The intersection form is Bᵀ L B. Here B is a Z-basis of ker ∂ (from
+    unimodular column reduction) and L is the 2-handles' linking matrix with
+    framings on the diagonal.
+  - Its rank, signature, nullity, |det| of the nondegenerate part, and parity.
+  - ∂X = surgery with dots → 0-framed (`boundary()`, `to_snappy_boundary()`).
+  - `invariants()` collects these. Without 2/3 moves (`closed=False`) it also
+    includes χ and H₁(∂X).
+- **Moves.**
+
+| Move | Legal when | Effect |
+|---|---|---|
+| Reidemeister | as in `core.moves` | isotopy |
+| `HANDLE_SLIDE(a, b)` | the `R2_ADD` face rule, and: 2-handle over 2-handle; 2-handle over dotted circle; dotted over dotted only if no crossing has two dotted strands | `band_slide`, with framing 0 for a dotted circle; f_i updated only for a 2-handle |
+| `CANCEL_12(a)` | dotted `a` has exactly two crossings, both with one 2-handle K, over at one and under at the other, joined by an edge of K | remove `a` and K (`remove_components`) |
+| `CREATE_12(sign=n)` | n ∈ {−1, 0, 1} | insert a split Hopf link: dotted circle + n-framed unknot |
+| `CANCEL_23(a)` / `CREATE_23()` | `closed=True`; `a` a crossingless 0-framed 2-handle | remove / add it |
+
+### Listing moves and complexity
+
+- **Per-state cache.** `Handlebody._state()` makes one O(n) pass per diagram
+  state, keyed by `LinkDiagram.stamp`, which changes on every mutation. It
+  records the dotted flag of each port, whether the dotted circles are flat,
+  and the cancelling partner of each dotted circle. Every `is_legal` is then
+  O(1).
+- **`legal_moves`** is `list(iter_legal_moves)`, O(n + output).
+- **Slides** group each face's corners by component, so same-component pairs
+  are skipped wholesale: O(n + output + Σ_f |f|·#components at f).
+- **`count_legal_moves`** is O(n), summing bucket sizes; no pair is
+  enumerated.
+- **`move_masks`** is O(n): the diagram's masks plus per-side label and dotted
+  flags. A slide (x, y) is legal iff the labels differ, the sides share a face
+  (or lie in different pieces), and the dotted rule holds.
+
+Measurements (Python 3.12; dotted L7a6 grown to 220 crossings with 60 extra
+cancelling pairs, 939,921 legal moves):
+
+| Operation | Time / memory |
+|---|---|
+| `CANCEL_12` legality check | 0.15 µs (6.7 µs before, as an O(n) scan) |
+| `count_legal_moves` | 0.68 ms |
+| `move_masks` | 0.32 ms |
+| `iter_legal_moves` (all moves) | 0.12 MB peak |
+| `legal_moves` (all moves) | 552 ms, 84 MB |
+
+### Why dotted-over-dotted slides need the "flat" condition
+
+The band of `band_slide` crosses nothing in the full diagram. But the spanning
+disks of the dotted circles need not lie flat, so the band can thread another
+dotted circle's disk.
+
+A random walk found exactly this. The dotted circles were two components of
+the Borromean rings, crossing each other. After one dotted-over-dotted slide
+they no longer formed an unlink:
+- before the slide, SnapPy gave a free fundamental group on 2 generators;
+- after it, the dotted sublink simplified only to 10 crossings, and its group
+  had 3 generators and 2 relators.
+
+**The fix.** Allow such slides only when no crossing has two dotted strands.
+Then the dotted circles are disjoint planar curves with flat disks:
+- the push-off of the circle slid over has no self-crossings and needs no
+  twists;
+- the band is planar;
+- so the result is again crossing-free among dotted circles, a certified unlink.
+
+Reidemeister moves remain unrestricted and can untangle the dotted circles
+first. Slides of 2-handles over dotted circles are isotopies in ∂(0- and
+1-handles) and need no condition.
+
+### Cancellation
+
+`CANCEL_12` is recognised locally. The edge of K joining the dotted circle's
+two crossings bounds, together with the circle's two edges, two bigons.
+Nothing else can enter that side, so the circle bounds a disk pierced once,
+by K only. With nothing else through the 1-handle, the pair cancels and the
+other handles are unchanged; in 3D this is a slam dunk, giving (K, f − 1/0) =
+(K, ∞). K may be knotted and linked with other 2-handles.
+
+Strands that pass through a dotted circle must be slid off over K first.
+
+### Verification (`tests/test_handlebody.py`, plus the session checks below)
+
+- **Basic examples:** S¹×B³, the D²-bundle with Euler number n, the cancelling
+  pair (B⁴), and the chain dot–K–L (cancels to L).
+- **All 77 slides of 2-handles over dotted circles** on three contractible
+  Mazur-type examples (L7a6, L8a8, L8a9 with one dotted component):
+  - invariants unchanged;
+  - SnapPy isometry of the hyperbolic boundaries.
+- **Every dotted-over-dotted slide** (18) on three flat configurations:
+  invariants unchanged, and the dotted sublink stays a certified unlink.
+- **Random walks** (open and closed) with slides, 1/2 and 2/3 creations and
+  cancellations:
+  - invariants unchanged;
+  - dotted circles stay unlinked (linking numbers checked every step; unlink
+    certified by simplification or a free π₁).
+
 ## Next
 
-- Dotted circles (1-handles), 1/2- and 2/3-handle cancellation, and slides of
-  1-handles over 1-handles.
-- Non-split blow-downs (Rolfsen twists) as macros.
-- An action space for Kirby moves. Slides use the same factored face/piece
-  masks as `R2_ADD`, plus a label-difference mask.
+- Non-split blow-downs (Rolfsen twists) and general 1-handle slides (bands
+  certified not to thread dotted disks) as macros.
+- Recognising cancelling pairs beyond the local meridian pattern.
+- An RL environment and action space for Kirby moves (on hold). Slides use the
+  same factored face/piece masks as `R2_ADD`, plus label and dotted masks.

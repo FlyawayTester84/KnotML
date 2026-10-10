@@ -1,16 +1,14 @@
-"""Framed links and Kirby calculus on PD diagrams.
+"""Framed links and 3-manifold (surgery) Kirby calculus on PD diagrams.
 
 A :class:`FramedLink` is a :class:`~knotml.core.LinkDiagram` whose components,
 identified by their stable labels, carry integer framing coefficients.  The
 framing of a component is the linking number with its framing push-off,
 measured against the Seifert framing, so Reidemeister moves never change it;
 the blackboard framing (self-writhe) is a separate, diagram-dependent number.
+A framed link describes the 3-manifold obtained by integral surgery on S³.
 
-A framed link describes the 3-manifold obtained by integral surgery on S³,
-and the 4-manifold obtained from B⁴ by attaching 2-handles along it.
-
-Moves
------
+Moves (``SURGERY_KINDS`` plus Reidemeister moves)
+-------------------------------------------------
 * Reidemeister moves: the same :class:`~knotml.core.Move` objects as for diagrams
   (crossing changes excluded).
 * ``BLOW_UP(sign)``: add a split, crossingless unknot framed ``sign = ±1``.
@@ -22,32 +20,38 @@ Moves
   subtracts it otherwise; a kink (R1) first gives the other choice.
 
 By Kirby's theorem two framed links give homeomorphic 3-manifolds iff they
-are related by these moves; without blow-ups and blow-downs they give
-diffeomorphic 4-manifolds.
+are related by these moves.  For 4-manifolds (dotted circles, handle
+cancellations, no blow-ups) see :mod:`knotml.handlebody`.
 
-A handle slide of ``K_i`` over ``K_j`` is built in O(n + |f_j - w_j|): a
-blackboard push-off of ``K_j`` on the band side (each crossing of ``K_j`` with
-another strand gains one crossing, each self-crossing three), ``f_j - w_j``
-full twists between ``K_j`` and the push-off so their linking number is the
-framing ``f_j``, and a band joining the push-off to ``K_i``.  The new framing
-is ``f_i + f_j + 2·ε·lk(K_i, K_j)`` with ``ε = ±1`` for addition/subtraction.
+A handle slide of ``K_i`` over ``K_j`` (:func:`band_slide`) is built in
+O(n + |f_j - w_j|): a blackboard push-off of ``K_j`` on the band side (each
+crossing of ``K_j`` with another strand gains one crossing, each self-crossing
+three), ``f_j - w_j`` full twists between ``K_j`` and the push-off so their
+linking number is the framing ``f_j``, and a band joining the push-off to
+``K_i``.  The new framing is ``f_i + f_j + 2·ε·lk(K_i, K_j)`` with ``ε = ±1``
+for addition/subtraction.
 """
 
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import Iterable, Mapping, NamedTuple, Optional, Sequence, Union
+from typing import Iterable, Iterator, Mapping, NamedTuple, Optional, Sequence, Union
 
 import numpy as np
 
 from .core import ISOTOPY_KINDS, IllegalMoveError, LinkDiagram, Move
+from .core.moves import _ports_by_piece
 from .core.ports import TRIVIAL, next_ccw, prev_ccw, strand_index
 
 __all__ = [
     "FramedLink",
     "KirbyKind",
     "KirbyMove",
-    "KIRBY_KINDS",
+    "SURGERY_KINDS",
+    "HANDLEBODY_KINDS",
+    "band_slide",
+    "iter_slide_locations",
+    "count_slide_locations",
     "pushoff",
 ]
 
@@ -56,13 +60,22 @@ class KirbyKind(IntEnum):
     BLOW_UP = 10
     BLOW_DOWN = 11
     HANDLE_SLIDE = 12
+    CANCEL_12 = 13
+    CREATE_12 = 14
+    CANCEL_23 = 15
+    CREATE_23 = 16
 
 
-KIRBY_KINDS = frozenset(KirbyKind)
+SURGERY_KINDS = frozenset({KirbyKind.BLOW_UP, KirbyKind.BLOW_DOWN, KirbyKind.HANDLE_SLIDE})
+"""Kirby moves of the 3-manifold (surgery) calculus, used by :class:`FramedLink`."""
+HANDLEBODY_KINDS = frozenset(
+    {KirbyKind.HANDLE_SLIDE, KirbyKind.CANCEL_12, KirbyKind.CREATE_12, KirbyKind.CANCEL_23, KirbyKind.CREATE_23}
+)
+"""Kirby moves of the 4-manifold calculus, used by :class:`knotml.handlebody.Handlebody`."""
 
 
 class KirbyMove(NamedTuple):
-    """``BLOW_UP(sign)``, ``BLOW_DOWN(a=label)`` or ``HANDLE_SLIDE(a=side, b=side)``."""
+    """A Kirby move; ``a``, ``b`` and ``sign`` are interpreted per kind (see ``__repr__``)."""
 
     kind: KirbyKind
     a: int = TRIVIAL
@@ -70,18 +83,27 @@ class KirbyMove(NamedTuple):
     sign: int = 0
 
     def __repr__(self) -> str:
-        if self.kind == KirbyKind.BLOW_UP:
+        k = self.kind
+        if k == KirbyKind.BLOW_UP:
             return f"BLOW_UP(sign={self.sign:+d})"
-        if self.kind == KirbyKind.BLOW_DOWN:
+        if k == KirbyKind.BLOW_DOWN:
             return f"BLOW_DOWN(label={self.a})"
-        return f"HANDLE_SLIDE(slide={self.a}, over={self.b})"
+        if k == KirbyKind.HANDLE_SLIDE:
+            return f"HANDLE_SLIDE(slide={self.a}, over={self.b})"
+        if k == KirbyKind.CANCEL_12:
+            return f"CANCEL_12(dotted={self.a})"
+        if k == KirbyKind.CREATE_12:
+            return f"CREATE_12(framing={self.sign:+d})"
+        if k == KirbyKind.CANCEL_23:
+            return f"CANCEL_23(label={self.a})"
+        return "CREATE_23()"
 
 
 AnyMove = Union[Move, KirbyMove]
 
 
 class FramedLink:
-    """A link diagram with an integer framing on each component (a Kirby diagram)."""
+    """A link diagram with an integer framing on each component: integral surgery on S³."""
 
     __slots__ = ("diagram", "_framing")
 
@@ -143,35 +165,18 @@ class FramedLink:
     def linking_matrix(self) -> list[list[int]]:
         """Linking numbers off the diagonal, framings on it, in label order.
 
-        This is the intersection form of the 4-manifold and a presentation
-        matrix for H₁ of the surgered 3-manifold.
+        It presents H₁ of the surgered 3-manifold, and is the intersection form of
+        the 4-manifold B⁴ ∪ 2-handles that it bounds.
         """
-        labels = self.labels()
-        index = {lab: k for k, lab in enumerate(labels)}
-        twice = [[0] * len(labels) for _ in labels]
-        lab = self.diagram._label
-        for c, s in enumerate(self.diagram._sign):
-            i, j = index[lab[2 * c]], index[lab[2 * c + 1]]
-            if i != j:
-                twice[i][j] += s
-                twice[j][i] += s
-        Q = [[v // 2 for v in row] for row in twice]
-        for k, label in enumerate(labels):
-            Q[k][k] = self._framing[label]
-        return Q
+        return linking_matrix(self.diagram, self.labels(), self._framing)
 
     def homology(self) -> list[int]:
         """H₁ of the surgered 3-manifold as elementary divisors (``0`` = a ``Z`` summand), like SnapPy."""
-        divisors = _smith_divisors(self.linking_matrix())
-        return sorted(d for d in divisors if d > 1) + [0] * divisors.count(0)
+        return abelian_group(self.linking_matrix())
 
     def signature(self) -> int:
-        """Signature of the linking matrix (the 4-manifold's intersection form)."""
-        Q = self.linking_matrix()
-        if not Q:
-            return 0
-        eig = np.linalg.eigvalsh(np.array(Q, dtype=float))
-        return int((eig > 1e-9).sum() - (eig < -1e-9).sum())
+        """Signature of the linking matrix (of the 2-handlebody it bounds)."""
+        return signature(self.linking_matrix())
 
     def canonical_key(self) -> bytes:
         """Key of the framed diagram up to relabelling (diagram and framings)."""
@@ -210,41 +215,51 @@ class FramedLink:
     # Moves
     # ------------------------------------------------------------------
 
-    def is_legal(self, move: AnyMove, calculus: str = "3-manifold") -> bool:
+    def is_legal(self, move: AnyMove) -> bool:
         d = self.diagram
         if isinstance(move.kind, KirbyKind):
             if move.kind == KirbyKind.BLOW_UP:
-                return calculus == "3-manifold" and move.sign in (1, -1)
+                return move.sign in (1, -1)
             if move.kind == KirbyKind.BLOW_DOWN:
-                return (
-                    calculus == "3-manifold"
-                    and move.a in d.trivial_labels
-                    and self._framing.get(move.a) in (1, -1)
-                )
-            return self._slide_ok(move.a, move.b)
+                return move.a in d.trivial_labels and self._framing.get(move.a) in (1, -1)
+            if move.kind == KirbyKind.HANDLE_SLIDE:
+                return slide_location_ok(d, move.a, move.b)
+            return False  # handle cancellations belong to the 4-manifold calculus
         return move.kind in ISOTOPY_KINDS and d.is_legal(move)
 
-    def legal_moves(self, kinds: Iterable = ISOTOPY_KINDS | KIRBY_KINDS, calculus: str = "3-manifold") -> list:
-        """Legal isotopy and Kirby moves; ``calculus="4-manifold"`` excludes blow-ups and blow-downs."""
+    def legal_moves(self, kinds: Iterable = ISOTOPY_KINDS | SURGERY_KINDS) -> list:
+        """Legal isotopy and surgery-calculus moves of the given kinds."""
+        return list(self.iter_legal_moves(kinds))
+
+    def iter_legal_moves(self, kinds: Iterable = ISOTOPY_KINDS | SURGERY_KINDS) -> Iterator:
+        """The moves of :meth:`legal_moves`, generated lazily in O(n) extra memory."""
         kinds = frozenset(kinds)
         d = self.diagram
-        out: list = d.legal_moves(kinds & ISOTOPY_KINDS)
-        if calculus == "3-manifold":
-            if KirbyKind.BLOW_UP in kinds:
-                out += [KirbyMove(KirbyKind.BLOW_UP, sign=s) for s in (1, -1)]
-            if KirbyKind.BLOW_DOWN in kinds:
-                out += [
-                    KirbyMove(KirbyKind.BLOW_DOWN, a=lab)
-                    for lab in d.trivial_labels
-                    if self._framing[lab] in (1, -1)
-                ]
+        yield from d.iter_legal_moves(kinds & ISOTOPY_KINDS)
+        if KirbyKind.BLOW_UP in kinds:
+            yield from (KirbyMove(KirbyKind.BLOW_UP, sign=s) for s in (1, -1))
+        if KirbyKind.BLOW_DOWN in kinds:
+            blowable = [lab for lab in d.trivial_labels if self._framing[lab] in (1, -1)]
+            yield from (KirbyMove(KirbyKind.BLOW_DOWN, a=lab) for lab in blowable)
         if KirbyKind.HANDLE_SLIDE in kinds:
-            out += self._slides()
+            yield from (KirbyMove(KirbyKind.HANDLE_SLIDE, x, y) for x, y in iter_slide_locations(d))
+
+    def count_legal_moves(self, kinds: Iterable = ISOTOPY_KINDS | SURGERY_KINDS) -> dict:
+        """Number of legal moves of each kind, in O(n) without listing them."""
+        kinds = frozenset(kinds)
+        d = self.diagram
+        out: dict = dict(d.count_legal_moves(kinds & ISOTOPY_KINDS))
+        if KirbyKind.BLOW_UP in kinds:
+            out[KirbyKind.BLOW_UP] = 2
+        if KirbyKind.BLOW_DOWN in kinds:
+            out[KirbyKind.BLOW_DOWN] = sum(self._framing[lab] in (1, -1) for lab in d.trivial_labels)
+        if KirbyKind.HANDLE_SLIDE in kinds:
+            out[KirbyKind.HANDLE_SLIDE] = count_slide_locations(d)
         return out
 
-    def apply_inplace(self, move: AnyMove, check: bool = True, calculus: str = "3-manifold") -> Optional[AnyMove]:
+    def apply_inplace(self, move: AnyMove, check: bool = True) -> Optional[AnyMove]:
         """Apply a move; return a move undoing it (``None`` for handle slides)."""
-        if check and not self.is_legal(move, calculus):
+        if check and not self.is_legal(move):
             raise IllegalMoveError(f"{move!r} is not legal on {self!r}")
         d = self.diagram
         if not isinstance(move.kind, KirbyKind):
@@ -257,90 +272,231 @@ class FramedLink:
         if move.kind == KirbyKind.BLOW_DOWN:
             d._trivial.remove(move.a)
             return KirbyMove(KirbyKind.BLOW_UP, sign=self._framing.pop(move.a))
-        self._handle_slide(move.a, move.b)
+        ki, kj = d.label_of_port(move.a), d.label_of_port(move.b)
+        self.diagram, eps, twice_lk = band_slide(d, move.a, move.b, self._framing[kj])
+        self._framing[ki] += self._framing[kj] + eps * twice_lk
         return None
 
-    def apply(self, move: AnyMove, check: bool = True, calculus: str = "3-manifold") -> FramedLink:
+    def apply(self, move: AnyMove, check: bool = True) -> FramedLink:
         out = self.copy()
-        out.apply_inplace(move, check, calculus)
+        out.apply_inplace(move, check)
         return out
 
-    def random_move(self, rng, kinds: Iterable = ISOTOPY_KINDS | KIRBY_KINDS, calculus: str = "3-manifold"):
-        return rng.choice(self.legal_moves(kinds, calculus))
-
-    # ------------------------------------------------------------------
-    # Handle slides
-    # ------------------------------------------------------------------
-
-    def _slide_ok(self, x: int, y: int) -> bool:
-        d = self.diagram
-        m = len(d._nbr)
-        if not (0 <= x < m and 0 <= y < m):
-            return False
-        if d.label_of_port(x) == d.label_of_port(y):
-            return False
-        face = d._ensure_faces()
-        return face[x] == face[y] or d._ensure_dcomp()[x >> 2] != d._ensure_dcomp()[y >> 2]
-
-    def _slides(self) -> list[KirbyMove]:
-        d = self.diagram
-        lab = [d.label_of_port(p) for p in range(len(d._nbr))]
-        HS = KirbyKind.HANDLE_SLIDE
-        out = []
-        for corners in d.faces():
-            out += [KirbyMove(HS, x, y) for x in corners for y in corners if lab[x] != lab[y]]
-        dcomp = d._ensure_dcomp()
-        pieces: dict[int, list[int]] = {}
-        for p in range(len(d._nbr)):
-            pieces.setdefault(dcomp[p >> 2], []).append(p)
-        groups = list(pieces.values())
-        for i, gi in enumerate(groups):
-            for j, gj in enumerate(groups):
-                if i != j:
-                    out += [KirbyMove(HS, x, y) for x in gi for y in gj]
-        return out
-
-    def _handle_slide(self, x: int, y: int) -> None:
-        d = self.diagram
-        ki, kj = d.label_of_port(x), d.label_of_port(y)
-        writhe_j = twice_lk = 0
-        for c, s in enumerate(d._sign):
-            pair = {d._label[2 * c], d._label[2 * c + 1]}
-            if pair == {kj}:
-                writhe_j += s
-            elif pair == {ki, kj}:
-                twice_lk += s
-        left = d.is_out(y)  # the push-off runs on the side of K_j that faces the band
-        tmp = max(self._framing) + 1
-        D, outer, push_outer = pushoff(d, kj, left, tmp)
-
-        # Full twists so that lk(K_j, push-off) equals the framing of K_j.  They go on the
-        # edge after y's edge, leaving the push-off edge beside y free for the band.
-        twists = self._framing[kj] - writhe_j
-        if twists:
-            tail_y = y if d.is_out(y) else d._nbr[y]
-            nxt = d._nbr[tail_y] ^ 2
-            _insert_twists(D, outer[nxt], push_outer[nxt], twists, kj_left=not left)
-
-        # Band: K_i's edge at x is reconnected to the push-off's edge beside y.
-        X, B = outer[x], push_outer[y]
-        eps = 1
-        if D.is_out(D._nbr[X]) == D.is_out(B):  # untwisted band needs the push-off reversed
-            eps = -1
-            rotated = set(D.reverse_component(tmp))
-            X = X ^ 2 if X >> 2 in rotated else X
-            B = B ^ 2 if B >> 2 in rotated else B
-        nbr = D._nbr
-        WA, BE = nbr[X], nbr[B]
-        nbr[WA], nbr[B] = B, WA
-        nbr[X], nbr[BE] = BE, X
-        D._label = [ki if v == tmp else v for v in D._label]
-        D._invalidate()
-        self.diagram = D
-        self._framing[ki] += self._framing[kj] + eps * twice_lk
+    def random_move(self, rng, kinds: Iterable = ISOTOPY_KINDS | SURGERY_KINDS):
+        return rng.choice(self.legal_moves(kinds))
 
     def __repr__(self) -> str:
         return f"FramedLink(crossings={self.diagram.n_crossings}, framings={self.framings})"
+
+
+# ----------------------------------------------------------------------
+# Shared by the 3- and 4-manifold calculi
+# ----------------------------------------------------------------------
+
+
+def slide_location_ok(d: LinkDiagram, x: int, y: int) -> bool:
+    """Whether sides ``x`` and ``y`` lie on different components and can be joined by a band."""
+    m = len(d._nbr)
+    if not (0 <= x < m and 0 <= y < m) or d.label_of_port(x) == d.label_of_port(y):
+        return False
+    face = d._ensure_faces()
+    return face[x] == face[y] or d._ensure_dcomp()[x >> 2] != d._ensure_dcomp()[y >> 2]
+
+
+def slide_locations(d: LinkDiagram) -> list[tuple[int, int]]:
+    """All ``(slide, over)`` side pairs satisfying :func:`slide_location_ok`."""
+    return list(iter_slide_locations(d))
+
+
+def iter_slide_locations(d: LinkDiagram, dotted=None, flat: bool = True) -> Iterator[tuple[int, int]]:
+    """Generate ``(slide, over)`` side pairs on different components that share a face or
+    lie in different pieces of the projection.
+
+    ``dotted`` (per-port flags, for handlebodies) restricts a dotted slid component to dotted
+    targets, and only when ``flat``.  Each face's corners are grouped by component, so pairs
+    on one component are skipped wholesale: O(n + output + Σ_f |f|·(components meeting f))
+    time and O(n) extra memory.
+    """
+    label = _port_labels(d)
+    for corners in d.faces():
+        buckets: dict[int, list[int]] = {}
+        for p in corners:
+            buckets.setdefault(label[p], []).append(p)
+        if len(buckets) < 2:
+            continue
+        groups = list(buckets.items())
+        dotted_groups = [(lab, ps) for lab, ps in groups if dotted[ps[0]]] if dotted is not None else []
+        for x in corners:
+            if dotted is not None and dotted[x]:
+                if not flat:
+                    continue
+                pool = dotted_groups
+            else:
+                pool = groups
+            lx = label[x]
+            for ly, ys in pool:
+                if ly != lx:
+                    for y in ys:
+                        yield x, y
+    pieces = _ports_by_piece(d)
+    if len(pieces) > 1:
+        dotted_pieces = [[p for p in g if dotted[p]] for g in pieces] if dotted is not None else pieces
+        for i, gi in enumerate(pieces):
+            for x in gi:
+                if dotted is not None and dotted[x]:
+                    if not flat:
+                        continue
+                    pools = dotted_pieces
+                else:
+                    pools = pieces
+                for j, g in enumerate(pools):
+                    if j != i:
+                        for y in g:
+                            yield x, y
+
+
+def count_slide_locations(d: LinkDiagram, dotted=None, flat: bool = True) -> int:
+    """``len(list(iter_slide_locations(d, dotted, flat)))`` in O(n) time and memory."""
+    label = _port_labels(d)
+    face = d._ensure_faces()
+    nf = len(d._face_start)
+    size = [0] * nf
+    dotted_size = [0] * nf
+    per_label: dict[tuple[int, int], int] = {}
+    for p, f in enumerate(face):
+        size[f] += 1
+        per_label[(f, label[p])] = per_label.get((f, label[p]), 0) + 1
+        if dotted is not None and dotted[p]:
+            dotted_size[f] += 1
+    total = 0
+    for p, f in enumerate(face):
+        own = per_label[(f, label[p])]
+        if dotted is not None and dotted[p]:
+            total += dotted_size[f] - own if flat else 0
+        else:
+            total += size[f] - own
+    pieces = _ports_by_piece(d)
+    if len(pieces) > 1:
+        n_all = sum(len(g) for g in pieces)
+        n_dot = sum(1 for g in pieces for p in g if dotted is not None and dotted[p])
+        for g in pieces:
+            g_dot = sum(1 for p in g if dotted is not None and dotted[p])
+            total += (len(g) - g_dot) * (n_all - len(g))
+            if flat:
+                total += g_dot * (n_dot - g_dot)
+    return total
+
+
+def _port_labels(d: LinkDiagram) -> list[int]:
+    lab = d._label
+    return [lab[((p >> 2) << 1) | (p & 1)] for p in range(len(d._nbr))]
+
+
+def band_slide(d: LinkDiagram, x: int, y: int, framing_j: int) -> tuple[LinkDiagram, int, int]:
+    """Slide the component through side ``x`` over the one through side ``y``.
+
+    ``framing_j`` is the framing used for the push-off of the component at ``y``
+    (0 for a dotted circle).  Returns the new diagram, ``ε = ±1`` (handle
+    addition/subtraction) and ``2·lk`` of the two components before the slide.
+    The slid component keeps its label.
+    """
+    ki, kj = d.label_of_port(x), d.label_of_port(y)
+    writhe_j = twice_lk = 0
+    for c, s in enumerate(d._sign):
+        pair = {d._label[2 * c], d._label[2 * c + 1]}
+        if pair == {kj}:
+            writhe_j += s
+        elif pair == {ki, kj}:
+            twice_lk += s
+    left = d.is_out(y)  # the push-off runs on the side of K_j that faces the band
+    tmp = max(d.labels()) + 1
+    D, outer, push_outer = pushoff(d, kj, left, tmp)
+
+    # Full twists so that lk(K_j, push-off) equals the framing of K_j.  They go on the
+    # edge after y's edge, leaving the push-off edge beside y free for the band.
+    twists = framing_j - writhe_j
+    if twists:
+        tail_y = y if d.is_out(y) else d._nbr[y]
+        nxt = d._nbr[tail_y] ^ 2
+        _insert_twists(D, outer[nxt], push_outer[nxt], twists, kj_left=not left)
+
+    # Band: K_i's edge at x is reconnected to the push-off's edge beside y.
+    X, B = outer[x], push_outer[y]
+    eps = 1
+    if D.is_out(D._nbr[X]) == D.is_out(B):  # untwisted band needs the push-off reversed
+        eps = -1
+        rotated = set(D.reverse_component(tmp))
+        X = X ^ 2 if X >> 2 in rotated else X
+        B = B ^ 2 if B >> 2 in rotated else B
+    nbr = D._nbr
+    WA, BE = nbr[X], nbr[B]
+    nbr[WA], nbr[B] = B, WA
+    nbr[X], nbr[BE] = BE, X
+    D._label = [ki if v == tmp else v for v in D._label]
+    D._invalidate()
+    return D, eps, twice_lk
+
+
+def linking_matrix(d: LinkDiagram, labels: Sequence[int], diagonal: Mapping[int, int]) -> list[list[int]]:
+    """Linking numbers between ``labels`` (in that order), with ``diagonal[label]`` on the diagonal."""
+    index = {lab: k for k, lab in enumerate(labels)}
+    twice = [[0] * len(labels) for _ in labels]
+    lab = d._label
+    for c, s in enumerate(d._sign):
+        i, j = index.get(lab[2 * c]), index.get(lab[2 * c + 1])
+        if i is not None and j is not None and i != j:
+            twice[i][j] += s
+            twice[j][i] += s
+    Q = [[v // 2 for v in row] for row in twice]
+    for k, label in enumerate(labels):
+        Q[k][k] = diagonal[label]
+    return Q
+
+
+def abelian_group(M: list[list[int]]) -> list[int]:
+    """Cokernel of an integer matrix as elementary divisors (``0`` = a ``Z`` summand), like SnapPy."""
+    divisors = _smith_divisors(M)
+    if M and len(M) > len(M[0]):  # more rows than columns: the extra rows are free summands
+        divisors += [0] * (len(M) - len(M[0]))
+    return sorted(v for v in divisors if v > 1) + [0] * divisors.count(0)
+
+
+def signature(Q: list[list[int]]) -> int:
+    if not Q:
+        return 0
+    eig = np.linalg.eigvalsh(np.array(Q, dtype=float))
+    return int((eig > 1e-9).sum() - (eig < -1e-9).sum())
+
+
+def integer_kernel(A: list[list[int]], n_cols: int) -> list[list[int]]:
+    """A Z-basis of ``{v in Z^n_cols : A v = 0}`` (unimodular column reduction)."""
+    M = [row[:] for row in A]
+    U = [[int(i == j) for j in range(n_cols)] for i in range(n_cols)]  # columns are tracked
+
+    def col_op(dst: int, src: int, q: int) -> None:  # column dst -= q * column src
+        for row in M:
+            row[dst] -= q * row[src]
+        for row in U:
+            row[dst] -= q * row[src]
+
+    def swap(i: int, j: int) -> None:
+        for row in M + U:
+            row[i], row[j] = row[j], row[i]
+
+    col = 0
+    for r in range(len(M)):
+        while col < n_cols:
+            nonzero = [j for j in range(col, n_cols) if M[r][j]]
+            if not nonzero:
+                break
+            swap(col, min(nonzero, key=lambda j: abs(M[r][j])))
+            for j in range(col + 1, n_cols):
+                if M[r][j]:
+                    col_op(j, col, M[r][j] // M[r][col])
+            if all(M[r][j] == 0 for j in range(col + 1, n_cols)):
+                col += 1
+                break
+    return [[U[i][j] for i in range(n_cols)] for j in range(col, n_cols)]
 
 
 # ----------------------------------------------------------------------

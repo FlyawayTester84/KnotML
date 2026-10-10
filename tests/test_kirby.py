@@ -4,7 +4,7 @@ import pytest
 from _util import KNOTS, LINKS
 
 from knotml import ISOTOPY_KINDS, IllegalMoveError, LinkDiagram, Move, MoveKind
-from knotml.kirby import KIRBY_KINDS, FramedLink, KirbyKind, KirbyMove, pushoff
+from knotml.kirby import SURGERY_KINDS, FramedLink, KirbyKind, KirbyMove, pushoff
 
 WHITEHEAD = [[6, 1, 7, 2], [10, 7, 5, 8], [4, 5, 1, 6], [2, 10, 3, 9], [8, 4, 9, 3]]  # LinkInfo L5a1{0}
 BORROMEAN = [  # LinkInfo L6a4{0,0}
@@ -38,13 +38,13 @@ def test_blow_up_and_down():
     assert inverse in F.legal_moves() and F.is_legal(inverse)
     F.apply_inplace(inverse)
     assert F.canonical_key() == key
-    assert not F.is_legal(KirbyMove(KirbyKind.BLOW_UP, sign=1), calculus="4-manifold")
+    assert not F.is_legal(KirbyMove(KirbyKind.CANCEL_12, a=0))  # 4-manifold moves live in Handlebody
     assert not F.is_legal(KirbyMove(KirbyKind.BLOW_DOWN, a=0))  # not a split crossingless unknot
 
 
 def test_crossingless_components_need_unit_framing_to_blow_down():
     F = FramedLink(LinkDiagram.unknot(2), [1, 2])
-    blow_downs = [m for m in F.legal_moves(KIRBY_KINDS) if m.kind == KirbyKind.BLOW_DOWN]
+    blow_downs = [m for m in F.legal_moves(SURGERY_KINDS) if m.kind == KirbyKind.BLOW_DOWN]
     assert blow_downs == [KirbyMove(KirbyKind.BLOW_DOWN, a=0)]
 
 
@@ -95,7 +95,7 @@ def test_random_kirby_walks_keep_homology():
         F = FramedLink.from_pd(WHITEHEAD, start)
         hom = F.homology()
         for _ in range(6):
-            kinds = ISOTOPY_KINDS | KIRBY_KINDS if F.diagram.n_crossings < 60 else {MoveKind.R1_REMOVE, MoveKind.R3}
+            kinds = ISOTOPY_KINDS | SURGERY_KINDS if F.diagram.n_crossings < 60 else {MoveKind.R1_REMOVE, MoveKind.R3}
             moves = F.legal_moves(kinds)
             if not moves:
                 break

@@ -93,10 +93,12 @@ def to_svg(
     labels: bool = False,
     title: str = "",
     highlight: Iterable[int] = (),
+    dotted: Iterable[int] = (),
 ) -> str:
     """An SVG drawing of ``d``: one colour per component, an arrow showing each orientation.
 
-    Crossings listed in ``highlight`` are circled.  Crossingless components are
+    Crossings listed in ``highlight`` are circled.  Components whose labels are in
+    ``dotted`` (1-handles in a Kirby diagram) get a solid dot instead of an arrow.  Crossingless components are
     drawn as labelled circles in a strip below the rest of the diagram.
     """
     components, crossings = layout(d) if d.n_crossings else ([], [])
@@ -127,6 +129,7 @@ def to_svg(
     ]
     if title:
         out.append(f"<title>{escape(title)}</title>")
+    dots = set(dotted)
     for label, comp in components:
         color = component_color(label)
         for line in comp:
@@ -135,7 +138,11 @@ def to_svg(
                 f'<polyline points="{pts}" fill="none" stroke="{color}" stroke-width="{width:.1f}" '
                 'stroke-linejoin="round" stroke-linecap="round"/>'
             )
-        out.append(_arrow(comp, xy, color, 3 * width))
+        if label in dots:
+            mx, my = _longest_midpoint(comp, xy)
+            out.append(f'<circle cx="{mx:.1f}" cy="{my:.1f}" r="{2.6 * width:.1f}" fill="{color}"/>')
+        else:
+            out.append(_arrow(comp, xy, color, 3 * width))
     if n_circles:  # crossingless components: separate circles, evenly spaced in their own area
         top = size - pad - strip if points else pad
         height = strip if points else size - 2 * pad
@@ -158,6 +165,8 @@ def to_svg(
                 f'<text x="{cx:.1f}" y="{cy + 0.3 * min(r, 14):.1f}" font-size="{min(r, 14):.1f}" '
                 f'text-anchor="middle" font-family="sans-serif" fill="{color}">K{label}</text>'
             )
+            if label in dots:
+                out.append(f'<circle cx="{cx:.1f}" cy="{cy - r:.1f}" r="{2.6 * width:.1f}" fill="{color}"/>')
     marked = set(highlight)
     for x, y, label in crossings:
         if label in marked:
@@ -176,6 +185,13 @@ def to_svg(
             )
     out.append("</svg>")
     return "\n".join(out)
+
+
+def _longest_midpoint(comp, xy) -> tuple[float, float]:
+    """Picture coordinates of the middle of a component's longest straight segment."""
+    a, b = max(((a, b) for line in comp for a, b in pairwise(line)), key=lambda ab: math.dist(*ab))
+    (ax, ay), (bx, by) = xy(a), xy(b)
+    return (ax + bx) / 2, (ay + by) / 2
 
 
 def _arrow(comp, xy, color: str, length: float) -> str:

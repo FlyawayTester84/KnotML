@@ -30,7 +30,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 58 passed, 1 skipped
+python -m pytest                            # whole suite: 76 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -178,12 +178,21 @@ anchored at ports:
 Legality checks are O(1), `apply_inplace` is O(1). See `planning/core-design.md` for the
 details and measured timings.
 
-### 7. Kirby calculus (framed links)
+### 7. Kirby calculus
 
-`FramedLink` (`knotml/kirby.py`) is a diagram with an integer framing on each component: the
-framing coefficient (linking number with the framing push-off), not the blackboard framing, so
-Reidemeister moves never change it. It describes integral surgery on S³ and the 4-manifold
-B⁴ ∪ 2-handles.
+There are two setups, sharing the handle-slide construction:
+
+| | 3-manifolds: `FramedLink` (`knotml/kirby.py`) | 4-manifolds: `Handlebody` (`knotml/handlebody.py`) |
+|---|---|---|
+| Components | framed knots | dotted circles (1-handles) and framed knots (2-handles) |
+| Describes | integral surgery on S³ | X = B⁴ ∪ 1-handles ∪ 2-handles (closed up with `closed=True`) |
+| Kirby moves | `BLOW_UP`, `BLOW_DOWN`, `HANDLE_SLIDE` (`SURGERY_KINDS`) | `HANDLE_SLIDE`, `CANCEL_12`, `CREATE_12`, `CANCEL_23`, `CREATE_23` (`HANDLEBODY_KINDS`) |
+| Invariants | linking matrix, H₁, signature, `to_snappy()` | χ, H₁(X), intersection form, signature, `boundary()` (∂X), `to_snappy_boundary()` |
+
+Framings are framing coefficients (linking number with the framing push-off), not blackboard
+framings, so Reidemeister moves never change them; both setups also allow every Reidemeister move.
+
+#### 7a. 3-manifolds: `FramedLink`
 
 ```python
 from knotml import FramedLink, KirbyKind, KirbyMove
@@ -200,7 +209,6 @@ H = G.apply(KirbyMove(KirbyKind.BLOW_UP, sign=-1))   # add a split (-1)-framed u
 H.framings, H.homology(), H.signature()              # {0: 5, 1: 7, 2: -1}, [10], 1
 
 F.to_snappy().is_isometric_to(G.to_snappy())         # True: same surgered 3-manifold (needs snappy)
-F.legal_moves(calculus="4-manifold")                 # isotopy + handle slides only (no blow-ups)
 ```
 
 Moves (`F.legal_moves()`, `F.apply(move)`, `F.apply_inplace(move)`):
@@ -252,6 +260,63 @@ surgeries; on very large diagrams SnapPy may fail to find the hyperbolic structu
 colour, and captions show the framings and H₁. See `planning/kirby-design.md` for the
 construction and verification.
 
+#### 7b. 4-manifolds: `Handlebody`
+
+Components are dotted circles (`None`), which must form an unlink, or framed 2-handles. There are
+no blow-ups; instead 1/2-handle pairs (and, with `closed=True`, 2/3-handle pairs) are created and
+cancelled.
+
+```python
+from knotml import Handlebody, KirbyKind, KirbyMove, LinkDiagram
+from knotml.interop import from_knotinfo
+
+X = Handlebody(from_knotinfo("L7a6{0}"), [None, -2])  # dotted circle + a -2-framed 2-handle
+X.euler_characteristic(), X.homology(), X.intersection_form(), X.boundary().homology()   # 1, [], [], []
+
+slide = X.legal_moves([KirbyKind.HANDLE_SLIDE])[0]   # HANDLE_SLIDE(slide=0, over=26): 2-handle over the dot
+Y = X.apply(slide)                                    # Y.components == {0: None, 1: -4}
+Y.invariants() == X.invariants()                      # True
+X.to_snappy_boundary().is_isometric_to(Y.to_snappy_boundary())   # True (needs snappy)
+
+C = Handlebody(LinkDiagram.from_braid([1, 1, 2, 2]), {1: None, 0: 2, 2: -3})   # dot - K0 - K2 chain
+C.legal_moves([KirbyKind.CANCEL_12])                  # [CANCEL_12(dotted=1)]: K1 is a meridian of K0
+C.apply(KirbyMove(KirbyKind.CANCEL_12, a=1)).components   # {2: -3}
+X.apply(KirbyMove(KirbyKind.CREATE_12, sign=0))       # adds a split dotted circle with a 0-framed meridian
+```
+
+| Move | Anchor | Legal when |
+|---|---|---|
+| `HANDLE_SLIDE` | `a` = side on the slid component, `b` = side on the other, sharing a face | 2-handle over 2-handle; 2-handle over a dotted circle (as over a 0-framed unknot); dotted circle over dotted circle only while no two dotted strands cross (keeps them an unlink). Never a dotted circle over a 2-handle |
+| `CANCEL_12` | `a` = dotted label | the dotted circle is a meridian of one 2-handle: two crossings, both with it, over and under, joined by an edge of it |
+| `CREATE_12` | `sign` = framing in {-1, 0, 1} | always: adds a split dotted circle with a framed meridian |
+| `CANCEL_23` / `CREATE_23` | `a` = label / — | `closed=True`; removes / adds a split crossingless 0-framed 2-handle |
+
+**Listing moves.** `X.legal_moves(kinds)` returns every legal move (Reidemeister and Kirby), each
+once, in O(n + output) time; legality checks (`X.is_legal(move)`) are O(1) after one O(n) pass per
+diagram state. Since the number of legal moves can grow quadratically (R2 moves and slides pair up
+sides), there are three cheaper views, also on `FramedLink` and `LinkDiagram`:
+
+| Method | Gives | Cost |
+|---|---|---|
+| `X.iter_legal_moves(kinds)` | the same moves, lazily | O(n) memory, O(1) per move |
+| `X.count_legal_moves(kinds)` | `{kind: number of legal moves}` | O(n), nothing enumerated |
+| `X.move_masks()` | legality as O(n) numpy arrays (slides factored by face, piece, component, dottedness) | O(n) |
+
+`invariants()` collects what every legal move preserves (χ, H₁(X), rank, signature, nullity,
+|det| and parity of the intersection form, H₁(∂X); fewer when `closed`). From the command line,
+`dot` in `--framings` selects the 4-manifold setup (`--four` forces it, `--closed` closes it up),
+and `--move`, `--list`, `--random`, `--verify` and `--html` work as above (dotted circles are
+drawn with a dot):
+
+```bash
+python scripts/inspect_diagram.py --knotinfo "L7a6{0}" --framings dot -2 --list HANDLE_SLIDE
+python scripts/inspect_diagram.py --knotinfo "L7a6{0}" --framings dot -2 --move "CREATE_12 0" --list CANCEL_12
+python scripts/inspect_diagram.py --knotinfo "L7a6{0}" --framings dot -2 --random 10 --seed 2 \
+    --max-crossings 50 --verify --html outputs/mazur_walk.html
+```
+
+Move arguments add `CANCEL_12 dotted`, `CREATE_12 framing`, `CANCEL_23 label`, `CREATE_23`.
+
 ### 8. Benchmark
 
 ```bash
@@ -273,7 +338,8 @@ src/knotml/
     ports.py       port arithmetic
   interop.py     exact conversion to/from Regina, SnapPy/spherogram, KnotInfo
   oracles.py     certified unknot test, genus, Jones, Alexander, signature (optional deps)
-  kirby.py       FramedLink: framings, blow-ups/downs, handle slides, surgery invariants
+  kirby.py       FramedLink (3-manifolds): framings, blow-ups/downs, handle slides, surgery invariants
+  handlebody.py  Handlebody (4-manifolds): dotted circles, 2-handles, slides, 1/2 and 2/3 cancellations
   visualization.py  spherogram drawings: SVG export and PLink viewer (optional deps)
   envs/          Gymnasium environment (awaiting the action-space design)
   agents/        baseline agents
@@ -296,5 +362,5 @@ Also refer to ``description.md``.
 2. ~~Implement Reidemeister moves~~ (`knotml/core/moves.py`)
 3. Choose the action space and observation encoder, then finish `UnknotEnv`
 4. ~~Basic visualization~~ (`knotml/visualization.py`); layouts that stay continuous across moves
-5. ~~Kirby calculus: `FramedLink` with framings, blow-ups and handle slides~~ (`knotml/kirby.py`);
-   next: dotted circles (1-handles), handle cancellations, an action space for Kirby moves
+5. ~~Kirby calculus~~: 3-manifolds (`knotml/kirby.py`) and 4-manifolds with dotted circles and
+   handle cancellations (`knotml/handlebody.py`); next: an RL environment and action space for Kirby moves

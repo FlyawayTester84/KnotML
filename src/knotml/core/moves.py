@@ -46,7 +46,8 @@ Complexity (``n`` crossings)
 from __future__ import annotations
 
 from enum import IntEnum
-from typing import TYPE_CHECKING, Iterable, NamedTuple, Optional
+import itertools
+from typing import TYPE_CHECKING, Iterable, Iterator, NamedTuple, Optional
 
 import numpy as np
 
@@ -175,45 +176,80 @@ def is_legal(d: LinkDiagram, move: Move) -> bool:
 
 
 def legal_moves(d: LinkDiagram, kinds: Iterable[MoveKind] = ISOTOPY_KINDS) -> list[Move]:
+    return list(iter_legal_moves(d, kinds))
+
+
+def iter_legal_moves(d: LinkDiagram, kinds: Iterable[MoveKind] = ISOTOPY_KINDS) -> Iterator[Move]:
+    """Generate the legal moves in O(n) extra memory and O(1) time per move (after O(n) setup)."""
     kinds = frozenset(kinds)
     nbr = d._nbr
     m = len(nbr)
-    out: list[Move] = []
     if MoveKind.R1_REMOVE in kinds:
-        out += [Move(MoveKind.R1_REMOVE, p) for p in range(m) if sigma(nbr, p) == p]
+        yield from (Move(MoveKind.R1_REMOVE, p) for p in range(m) if sigma(nbr, p) == p)
     if MoveKind.R2_REMOVE in kinds:
-        out += [Move(MoveKind.R2_REMOVE, p) for p in range(1, m, 2) if _bigon(nbr, p)]
+        yield from (Move(MoveKind.R2_REMOVE, p) for p in range(1, m, 2) if _bigon(nbr, p))
     if MoveKind.R3 in kinds:
-        out += [Move(MoveKind.R3, p) for p in range(1, m, 2) if _triangle(nbr, p)]
+        yield from (Move(MoveKind.R3, p) for p in range(1, m, 2) if _triangle(nbr, p))
     if MoveKind.R1_ADD in kinds:
-        anchors = list(range(m)) + [trivial_anchor(i) for i in range(len(d._trivial))]
-        out += [Move(MoveKind.R1_ADD, p, TRIVIAL, s) for p in anchors for s in (1, -1)]
+        anchors = itertools.chain(range(m), (trivial_anchor(i) for i in range(len(d._trivial))))
+        yield from (Move(MoveKind.R1_ADD, p, TRIVIAL, s) for p in anchors for s in (1, -1))
     if MoveKind.R2_ADD in kinds:
-        out += _r2_add_moves(d)
+        yield from _iter_r2_add(d)
     if MoveKind.CROSSING_CHANGE in kinds:
-        out += [Move(MoveKind.CROSSING_CHANGE, c) for c in range(len(d._sign))]
-    return out
+        yield from (Move(MoveKind.CROSSING_CHANGE, c) for c in range(len(d._sign)))
 
 
-def _r2_add_moves(d: LinkDiagram) -> list[Move]:
+def _iter_r2_add(d: LinkDiagram) -> Iterator[Move]:
     R2 = MoveKind.R2_ADD
-    out = []
     for corners in d.faces():
-        out += [Move(R2, x, y) for x in corners for y in corners if x != y]
+        yield from (Move(R2, x, y) for x in corners for y in corners if x != y)
+    groups = _ports_by_piece(d)
+    for i, gi in enumerate(groups):
+        for j, gj in enumerate(groups):
+            if i != j:
+                yield from (Move(R2, x, y) for x in gi for y in gj)
+    ports = range(len(d._nbr))
+    circles = [trivial_anchor(i) for i in range(len(d._trivial))]
+    for t in circles:
+        yield from (Move(R2, x, t) for x in ports)
+        yield from (Move(R2, t, y) for y in ports)
+        yield from (Move(R2, t, u) for u in circles if u != t)
+
+
+def _ports_by_piece(d: LinkDiagram) -> list[list[int]]:
     dcomp = d._ensure_dcomp()
     pieces: dict[int, list[int]] = {}
     for p in range(len(d._nbr)):
         pieces.setdefault(dcomp[p >> 2], []).append(p)
-    groups = list(pieces.values())
-    for i, gi in enumerate(groups):
-        for j, gj in enumerate(groups):
-            if i != j:
-                out += [Move(R2, x, y) for x in gi for y in gj]
-    ports = range(len(d._nbr))
-    circles = [trivial_anchor(i) for i in range(len(d._trivial))]
-    for t in circles:
-        out += [Move(R2, x, t) for x in ports] + [Move(R2, t, y) for y in ports]
-        out += [Move(R2, t, u) for u in circles if u != t]
+    return list(pieces.values())
+
+
+def count_legal_moves(d: LinkDiagram, kinds: Iterable[MoveKind] = ISOTOPY_KINDS) -> dict[MoveKind, int]:
+    """Number of legal moves of each kind in O(n), without enumerating R2_ADD pairs."""
+    kinds = frozenset(kinds)
+    nbr = d._nbr
+    m, t = len(nbr), len(d._trivial)
+    out: dict[MoveKind, int] = {}
+    if MoveKind.R1_REMOVE in kinds:
+        out[MoveKind.R1_REMOVE] = sum(sigma(nbr, p) == p for p in range(m))
+    if MoveKind.R2_REMOVE in kinds:
+        out[MoveKind.R2_REMOVE] = sum(_bigon(nbr, p) for p in range(1, m, 2))
+    if MoveKind.R3 in kinds:
+        out[MoveKind.R3] = sum(_triangle(nbr, p) for p in range(1, m, 2))
+    if MoveKind.R1_ADD in kinds:
+        out[MoveKind.R1_ADD] = 2 * (m + t)
+    if MoveKind.R2_ADD in kinds:
+        d._ensure_faces()
+        sizes = [0] * len(d._face_start)
+        for f in d._face:  # type: ignore[union-attr]
+            sizes[f] += 1
+        pieces = [len(g) for g in _ports_by_piece(d)]
+        total = sum(pieces)
+        out[MoveKind.R2_ADD] = (
+            sum(k * (k - 1) for k in sizes) + sum(k * (total - k) for k in pieces) + t * (2 * m + t - 1)
+        )
+    if MoveKind.CROSSING_CHANGE in kinds:
+        out[MoveKind.CROSSING_CHANGE] = len(d._sign)
     return out
 
 
@@ -464,6 +500,27 @@ def _splice(d: LinkDiagram, pairs: list[tuple[int, int]]) -> dict[int, Optional[
         else:
             _link(nbr, ea, eb)
     return ends  # type: ignore[return-value]
+
+
+def remove_components(d: LinkDiagram, labels: Iterable[int]) -> None:
+    """Delete the components with these labels; other strands run straight through.
+
+    A component whose crossings were all with removed components becomes
+    crossingless.  O(n).
+    """
+    labels = set(labels)
+    lab, sign = d._label, d._sign
+    doomed = [c for c in range(len(sign)) if lab[2 * c] in labels or lab[2 * c + 1] in labels]
+    pairs = []
+    for c in doomed:
+        for par in (0, 1):
+            if lab[2 * c + par] not in labels:
+                p_in = 4 * c if par == 0 else 4 * c + (3 if sign[c] > 0 else 1)
+                pairs.append((p_in, p_in ^ 2))
+    _splice(d, pairs)
+    _delete_crossings(d, doomed)
+    d._trivial[:] = [t for t in d._trivial if t not in labels]
+    d._invalidate()
 
 
 def _trace(nbr: list[int], through: dict[int, int], start: int) -> tuple[Optional[int], list[int]]:

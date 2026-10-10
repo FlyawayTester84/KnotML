@@ -13,6 +13,7 @@ Usage:
     python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --random 8 --verify --html kirby.html
     python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --list HANDLE_SLIDE   # see the options
     python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --move "HANDLE_SLIDE 0 10"   # apply one
+    python scripts/inspect_diagram.py --knotinfo "L7a6{0}" --framings dot -2 --list CANCEL_12   # 4-manifold
 """
 
 from __future__ import annotations
@@ -31,8 +32,10 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(
 from knotml import (  # noqa: E402
     ALL_KINDS,
     ISOTOPY_KINDS,
-    KIRBY_KINDS,
+    HANDLEBODY_KINDS,
+    SURGERY_KINDS,
     FramedLink,
+    Handlebody,
     KirbyKind,
     KirbyMove,
     LinkDiagram,
@@ -84,7 +87,16 @@ def main() -> int:
     source.add_argument("--pd", help='PD code, e.g. "[[1,5,2,4],[3,1,4,6],[5,3,6,2]]"')
     source.add_argument("--knotinfo", help="KnotInfo/LinkInfo name, e.g. 8_20")
     source.add_argument("--snappy", help='SnapPy name or code, e.g. K12n123 or "DT: [(4,6,2)]"')
-    parser.add_argument("--framings", type=int, nargs="+", help="framings in component-label order: Kirby diagram")
+    parser.add_argument(
+        "--framings",
+        nargs="+",
+        metavar="F",
+        help="one per component in label order: an integer framing, or 'dot' for a dotted circle (1-handle). "
+        "Integers only: 3-manifold surgery calculus (FramedLink); any 'dot' or --four: 4-manifold calculus "
+        "(Handlebody)",
+    )
+    parser.add_argument("--four", action="store_true", help="use the 4-manifold calculus even without dotted circles")
+    parser.add_argument("--closed", action="store_true", help="4-manifold closed up by 3- and 4-handles (2/3 moves)")
     parser.add_argument(
         "--move",
         action="append",
@@ -132,44 +144,60 @@ def main() -> int:
         d = from_spherogram(spherogram.Link(args.snappy))
     else:
         d = LinkDiagram.from_braid(args.braid or [1, 1, 1])
-    framed = FramedLink(d, args.framings) if args.framings else None
-    obj, kinds = (framed, ISOTOPY_KINDS | KIRBY_KINDS) if framed else (d, ISOTOPY_KINDS)
+    kirby = None
+    if args.framings:
+        try:
+            comps = [None if v.lower() in ("dot", "d", ".") else int(v) for v in args.framings]
+            if None in comps or args.four or args.closed:
+                kirby = Handlebody(d, comps, closed=args.closed)
+            else:
+                kirby = FramedLink(d, comps)
+        except ValueError as err:
+            parser.error(f"--framings: {err}")
+    obj = kirby or d
+    calculus = "4" if isinstance(kirby, Handlebody) else "3" if kirby else None
+    kinds = ISOTOPY_KINDS | {"4": HANDLEBODY_KINDS, "3": SURGERY_KINDS, None: frozenset()}[calculus]
     rng = random.Random(args.seed)
 
+    def components():
+        if isinstance(kirby, Handlebody):
+            return kirby.components
+        return kirby.framings if kirby else None
+
     def describe(step_label: str) -> str:
-        extra = f"  framings {framed.framings}" if framed else ""
+        extra = f"  components {_format_components(components())}" if kirby else ""
         return f"{step_label}{d.n_crossings} crossings{extra}  PD {d.to_pd()}"
 
     if args.trace:
         print(describe("step 0: "))
-    verify = make_verifier(framed if framed else d) if args.verify else None
+    verify = make_verifier(obj) if args.verify else None
     failures = unknown = steps = 0
-    history = [("start", d.copy(), set(), framed.framings if framed else None, "")]
+    history = [("start", d.copy(), set(), components(), "")]
 
     def apply(move) -> None:
         nonlocal d, failures, unknown, steps
         touched = _touched_crossings(d, move)
         obj.apply_inplace(move)  # raises IllegalMoveError for an illegal move
-        d = framed.diagram if framed else d  # a handle slide builds a new diagram
+        d = kirby.diagram if kirby else d  # a handle slide builds a new diagram
         steps += 1
         if args.trace:
             print(describe(f"step {steps}: {move!r} -> "))
         status = ""
         if verify:
-            ok, status = verify(framed if framed else d)
+            ok, status = verify(obj)
             failures += ok is False
             unknown += ok is None
             print(f"verify step {steps}: {'ok' if ok else 'inconclusive' if ok is None else 'FAILED'} ({status})")
         if args.html:
             new = set(range(history[-1][1].n_crossings, d.n_crossings))
-            history.append((repr(move), d.copy(), touched | new, framed.framings if framed else None, status))
+            history.append((repr(move), d.copy(), touched | new, components(), status))
 
     for spec in args.move:
         try:
             move = parse_move(spec)
         except (ValueError, KeyError) as err:
             parser.error(f"--move {spec!r}: {err}")
-        if isinstance(move, KirbyMove) and framed is None:
+        if isinstance(move, KirbyMove) and kirby is None:
             parser.error(f"--move {spec!r}: Kirby moves need --framings")
         if not obj.is_legal(move):
             parser.error(f"--move {spec!r}: {move!r} is not legal here (see --list {move.kind.name})")
@@ -192,16 +220,23 @@ def main() -> int:
     print("faces:", d.n_faces, "| writhe:", d.writhe(), "| determinant:", determinant(d))
     counts = Counter(m.kind.name for m in d.legal_moves(ALL_KINDS))
     print("legal moves:", dict(counts))
-    if framed:
-        print("framings:", framed.framings, "| linking matrix:", framed.linking_matrix())
-        print("H1 of surgery:", framed.homology(), "| signature:", framed.signature())
-        print("legal Kirby moves:", dict(Counter(m.kind.name for m in framed.legal_moves(KIRBY_KINDS))))
+    if isinstance(kirby, FramedLink):
+        print("framings:", kirby.framings, "| linking matrix:", kirby.linking_matrix())
+        print("H1 of surgery:", kirby.homology(), "| signature:", kirby.signature())
+        print("legal Kirby moves:", dict(Counter(m.kind.name for m in kirby.legal_moves(SURGERY_KINDS))))
+    elif isinstance(kirby, Handlebody):
+        print("components:", _format_components(kirby.components), "| closed" if kirby.closed else "")
+        print(f"1-handles: {kirby.n_1handles} | 2-handles: {kirby.n_2handles} | euler characteristic: "
+              f"{kirby.euler_characteristic()} | H1(X): {kirby.homology()}")
+        print("intersection form:", kirby.intersection_form(), "| signature:", kirby.signature(),
+              "| H1 of boundary:", kirby.boundary().homology())
+        print("legal Kirby moves:", dict(Counter(m.kind.name for m in kirby.legal_moves(HANDLEBODY_KINDS))))
     if args.list:
-        list_moves(framed if framed else d, args.list.upper())
+        list_moves(obj, args.list.upper())
     if args.bench:
         bench(d)
     if args.html:
-        write_html(args.html, history)
+        write_html(args.html, history, calculus)
         print("wrote", args.html)
     if args.view:
         from knotml.visualization import view
@@ -215,7 +250,8 @@ def parse_move(spec: str):
     name, *rest = spec.replace(",", " ").split()
     name, vals = name.upper(), [int(v) for v in rest]
     expected = {"R1_ADD": "a sign", "R2_ADD": "over under", "HANDLE_SLIDE": "slide over",
-                "BLOW_UP": "sign", "BLOW_DOWN": "label"}.get(name, "a")
+                "BLOW_UP": "sign", "BLOW_DOWN": "label", "CANCEL_12": "dotted", "CREATE_12": "framing",
+                "CANCEL_23": "label", "CREATE_23": ""}.get(name, "a")
     if len(vals) != len(expected.split()):
         raise ValueError(f"{name} takes {len(expected.split())} integer(s): {expected}")
     if name in MoveKind.__members__:
@@ -226,20 +262,26 @@ def parse_move(spec: str):
     kind = KirbyKind[name]
     if kind == KirbyKind.BLOW_UP:
         return KirbyMove(kind, sign=vals[0])
-    if kind == KirbyKind.BLOW_DOWN:
+    if kind in (KirbyKind.BLOW_DOWN, KirbyKind.CANCEL_12, KirbyKind.CANCEL_23):
         return KirbyMove(kind, a=vals[0])
+    if kind == KirbyKind.CREATE_12:
+        return KirbyMove(kind, sign=vals[0])
+    if kind == KirbyKind.CREATE_23:
+        return KirbyMove(kind)
     return KirbyMove(kind, vals[0], vals[1])
 
 
 def list_moves(obj, kind_name: str) -> None:
     """Print every legal move of one kind with a description of its anchors."""
-    framed = obj if isinstance(obj, FramedLink) else None
-    d = framed.diagram if framed else obj
+    kirby = None if isinstance(obj, LinkDiagram) else obj
+    d = kirby.diagram if kirby else obj
+    framed = kirby  # framing() works on both FramedLink and Handlebody
     kinds = {**MoveKind.__members__, **KirbyKind.__members__}
     if kind_name not in kinds:
         raise SystemExit(f"unknown move kind {kind_name}; choose from {', '.join(kinds)}")
     kind = kinds[kind_name]
-    moves = (framed.legal_moves([kind]) if framed else d.legal_moves([kind])) if kind in ALL_KINDS or framed else []
+    moves = (kirby.legal_moves([kind]) if kirby else d.legal_moves([kind])) if kind in ALL_KINDS or kirby else []
+    dotted = set(kirby.dotted_labels()) if isinstance(kirby, Handlebody) else set()
     face = d.face_of_port()
 
     def where(p: int) -> str:
@@ -247,7 +289,9 @@ def list_moves(obj, kind_name: str) -> None:
             return f"crossingless component K{d.trivial_labels[-1 - p]} (anchor {p})"
         tail = d.edge_tail(p)
         side = "left" if p == tail else "right"
-        return f"K{d.label_of_port(p)} crossing {p >> 2} slot {p & 3}: {side} side of edge {tail}->{d.nbr[tail]}, face {face[p]}"
+        lab = d.label_of_port(p)
+        dot = " (dotted)" if lab in dotted else ""
+        return f"K{lab}{dot} crossing {p >> 2} slot {p & 3}: {side} side of edge {tail}->{d.nbr[tail]}, face {face[p]}"
 
     print(f"{len(moves)} legal {kind_name} moves:")
     for m in moves:
@@ -255,6 +299,15 @@ def list_moves(obj, kind_name: str) -> None:
             text = f"add a split {m.sign:+d}-framed unknot"
         elif kind == KirbyKind.BLOW_DOWN:
             text = f"remove K{m.a} (split unknot, framing {framed.framing(m.a):+d})"
+        elif kind == KirbyKind.CANCEL_12:
+            k = kirby._cancelling_partner(m.a)
+            text = f"erase dotted K{m.a} with the 2-handle K{k} (framing {kirby.framing(k):+d}) through it"
+        elif kind == KirbyKind.CREATE_12:
+            text = f"add a split dotted circle with a {m.sign:+d}-framed unknot through it"
+        elif kind == KirbyKind.CANCEL_23:
+            text = f"remove the split 0-framed unknot K{m.a} with a 3-handle"
+        elif kind == KirbyKind.CREATE_23:
+            text = "add a split 0-framed unknot with a 3-handle"
         elif kind == KirbyKind.HANDLE_SLIDE:
             adds = d.is_out(m.a) == d.is_out(m.b)  # same side of both edges: untwisted band adds
             text = f"slide [{where(m.a)}] over [{where(m.b)}] -> {'adds' if adds else 'subtracts'} the handle"
@@ -266,8 +319,10 @@ def list_moves(obj, kind_name: str) -> None:
             text = f"kink of sign {m.sign:+d} on [{where(m.a)}]"
         else:
             text = where(m.a)
-        args = {KirbyKind.BLOW_UP: f"{m.sign}", KirbyKind.BLOW_DOWN: f"{m.a}", MoveKind.R1_ADD: f"{m.a} {m.sign}"}
-        spec = f"{kind_name} {args.get(kind, f'{m.a} {m.b}' if kind in (MoveKind.R2_ADD, KirbyKind.HANDLE_SLIDE) else m.a)}"
+        args = {KirbyKind.BLOW_UP: f"{m.sign}", KirbyKind.BLOW_DOWN: f"{m.a}", MoveKind.R1_ADD: f"{m.a} {m.sign}",
+                KirbyKind.CANCEL_12: f"{m.a}", KirbyKind.CREATE_12: f"{m.sign}", KirbyKind.CANCEL_23: f"{m.a}",
+                KirbyKind.CREATE_23: ""}
+        spec = f"{kind_name} {args.get(kind, f'{m.a} {m.b}' if kind in (MoveKind.R2_ADD, KirbyKind.HANDLE_SLIDE) else m.a)}".strip()
         print(f'  --move "{spec}"  # {text}')
 
 
@@ -281,7 +336,39 @@ def _touched_crossings(d: LinkDiagram, move) -> set:
 
 
 def make_verifier(start):
-    """A check comparing a diagram or framed link with ``start``: returns ``(ok, description)``."""
+    """A check comparing a diagram, framed link or handlebody with ``start``: returns ``(ok, description)``."""
+    if isinstance(start, Handlebody):
+        invariants = start.invariants()
+        manifold = None
+        if not start.closed:  # 2/3 moves change the boundary, so it is only compared without them
+            try:
+                manifold = start.to_snappy_boundary()
+                hyperbolic = manifold.solution_type() == "all tetrahedra positively oriented"
+            except Exception:  # SnapPy missing, split, or S³ boundary: invariants only
+                manifold = None
+
+        def verify_handlebody(h):
+            h.diagram.check()
+            Handlebody(h.diagram, h.components, closed=h.closed)  # dotted circles still have linking number 0
+            now = h.invariants()
+            if now != invariants:
+                return False, f"invariants changed: {now}"
+            notes = [f"H1(X) {now['H1']}, signature {now['signature']}"]
+            if manifold is not None:
+                try:
+                    other = h.to_snappy_boundary()
+                except ValueError:
+                    return None, notes[0] + ", boundary split (not checked in SnapPy)"
+                if other.homology() != manifold.homology():
+                    return False, notes[0] + ", SnapPy boundary homology differs"
+                if hyperbolic:
+                    verdict, note = _same_hyperbolic(manifold, other)
+                    notes.append("boundary " + note)
+                    return (False if verdict is False else True if verdict else None), ", ".join(notes)
+                notes.append("boundary homology agrees in SnapPy")
+            return True, ", ".join(notes)
+
+        return verify_handlebody
     if isinstance(start, FramedLink):
         hom = start.homology()
         try:
@@ -339,25 +426,39 @@ def _same_hyperbolic(manifold, other):
     return None, f"inconclusive: SnapPy found no hyperbolic structure ({other.solution_type()})"
 
 
-def write_html(path: str, history: list) -> None:
+def _format_components(comps) -> str:
+    return "{" + ", ".join(f"K{lab}: {'dot' if f is None else f'{f:+d}'}" for lab, f in comps.items()) + "}"
+
+
+def write_html(path: str, history: list, calculus=None) -> None:
     """A self-contained page with one drawing per step, a slider and arrow-key navigation."""
     from knotml.visualization import component_color, to_svg
 
     frames = []
-    for step, (label, diagram, marked, framings, status) in enumerate(history):
+    for step, (label, diagram, marked, comps, status) in enumerate(history):
         caption = f"step {step}: {html.escape(label)} &rarr; {diagram.n_crossings} crossings"
-        if framings is None:
+        dotted = []
+        if comps is None:
             caption += f", determinant {determinant(diagram)}"
         else:
+            dotted = [lab for lab, f in comps.items() if f is None]
             chips = " ".join(
-                f'<span style="color:{component_color(lab)}">K{lab}: {f:+d}</span>' for lab, f in framings.items()
+                f'<span style="color:{component_color(lab)}">K{lab}: {"&bull;" if f is None else f"{f:+d}"}</span>'
+                for lab, f in comps.items()
             )
-            caption += f"<br>framings {chips} &middot; H<sub>1</sub> = {FramedLink(diagram, framings).homology()}"
+            if calculus == "4":
+                h = Handlebody(diagram, comps)
+                caption += (
+                    f"<br>{chips} &middot; &chi; = {h.euler_characteristic()} &middot; H<sub>1</sub>(X) = {h.homology()}"
+                    f" &middot; &sigma; = {h.signature()} &middot; H<sub>1</sub>(&part;X) = {h.boundary().homology()}"
+                )
+            else:
+                caption += f"<br>framings {chips} &middot; H<sub>1</sub> = {FramedLink(diagram, comps).homology()}"
         if status:
             caption += f"<br><small>verified: {html.escape(status)}</small>"
         frames.append(
             f'<figure class="frame" hidden><figcaption>{caption}</figcaption>'
-            f"{to_svg(diagram, size=520, labels=True, highlight=marked)}"
+            f"{to_svg(diagram, size=520, labels=True, highlight=marked, dotted=dotted)}"
             f"<details><summary>PD code</summary><code>{html.escape(str(diagram.to_pd()))}</code></details></figure>"
         )
     page = f"""<!doctype html>

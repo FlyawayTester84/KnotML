@@ -40,14 +40,17 @@ O(n) after a mutation; nothing else is stored.
 
 from __future__ import annotations
 
+import itertools
 import random
-from typing import Iterable, Optional, Sequence
+from typing import Iterable, Iterator, Optional, Sequence
 
 from . import moves as _moves
 from .moves import Move, MoveKind
 from .ports import next_ccw, strand_index as _strand
 
 __all__ = ["LinkDiagram", "PDError"]
+
+_STAMPS = itertools.count()  # every state of every diagram gets a distinct stamp
 
 
 class PDError(ValueError):
@@ -64,7 +67,7 @@ class LinkDiagram:
     :meth:`canonical_key` as a dictionary key for the diagram up to relabelling.
     """
 
-    __slots__ = ("_nbr", "_sign", "_label", "_trivial", "_face", "_face_start", "_dcomp", "_comps")
+    __slots__ = ("_nbr", "_sign", "_label", "_trivial", "_face", "_face_start", "_dcomp", "_comps", "_stamp")
 
     def __init__(
         self,
@@ -321,6 +324,28 @@ class LinkDiagram:
                 twice[j][i] += s
         return [[v // 2 for v in row] for row in twice]
 
+    def remove_components(self, labels: Iterable[int]) -> None:
+        """Delete these components in place; other strands run straight through. O(n)."""
+        _moves.remove_components(self, labels)
+
+    def insert(self, other: LinkDiagram) -> None:
+        """Add ``other`` as a separate piece (its labels must not clash with ours). O(n)."""
+        clash = set(self.labels()) & set(other.labels())
+        if clash:
+            raise ValueError(f"labels {sorted(clash)} are already used")
+        shift = len(self._nbr)
+        self._nbr += [q + shift for q in other._nbr]
+        self._sign += other._sign
+        self._label += other._label
+        self._trivial += other._trivial
+        self._invalidate()
+
+    def relabel(self, mapping: dict) -> None:
+        """Rename component labels in place (labels missing from ``mapping`` are kept)."""
+        self._label = [mapping.get(v, v) for v in self._label]
+        self._trivial = [mapping.get(v, v) for v in self._trivial]
+        self._invalidate()
+
     def reverse_component(self, label: int) -> list[int]:
         """Reverse the orientation of the component with this label, in place, in O(n).
 
@@ -385,6 +410,14 @@ class LinkDiagram:
     def legal_moves(self, kinds: Iterable[MoveKind] = _moves.ISOTOPY_KINDS) -> list[Move]:
         """All legal moves of the given kinds, each listed once."""
         return _moves.legal_moves(self, kinds)
+
+    def iter_legal_moves(self, kinds: Iterable[MoveKind] = _moves.ISOTOPY_KINDS) -> Iterator[Move]:
+        """The moves of :meth:`legal_moves`, generated lazily in O(n) extra memory."""
+        return _moves.iter_legal_moves(self, kinds)
+
+    def count_legal_moves(self, kinds: Iterable[MoveKind] = _moves.ISOTOPY_KINDS) -> dict:
+        """Number of legal moves of each kind, in O(n) without listing them."""
+        return _moves.count_legal_moves(self, kinds)
 
     def move_masks(self) -> dict:
         """Legality of every move as O(n)-size numpy arrays (see :func:`moves.move_masks`)."""
@@ -490,7 +523,13 @@ class LinkDiagram:
     # Caches
     # ------------------------------------------------------------------
 
+    @property
+    def stamp(self) -> int:
+        """Changes on every mutation and differs between diagrams: a key for derived caches."""
+        return self._stamp
+
     def _invalidate(self) -> None:
+        self._stamp = next(_STAMPS)
         self._face: Optional[list[int]] = None
         self._face_start: list[int] = []
         self._dcomp: Optional[list[int]] = None

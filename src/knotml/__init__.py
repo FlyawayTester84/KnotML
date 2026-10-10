@@ -13,7 +13,8 @@ from .core import (
     PDError,
     determinant,
 )
-from .kirby import KIRBY_KINDS, FramedLink, KirbyKind, KirbyMove
+from .handlebody import Handlebody
+from .kirby import HANDLEBODY_KINDS, SURGERY_KINDS, FramedLink, KirbyKind, KirbyMove
 
 __all__ = [
     "LinkDiagram",
@@ -28,7 +29,9 @@ __all__ = [
     "NON_INCREASING_KINDS",
     "determinant",
     "FramedLink",
+    "Handlebody",
     "KirbyKind",
     "KirbyMove",
-    "KIRBY_KINDS",
+    "SURGERY_KINDS",
+    "HANDLEBODY_KINDS",
 ]
