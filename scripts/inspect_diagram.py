@@ -172,6 +172,7 @@ Each step is laid out from scratch, so pictures can jump between steps. Use &lar
   show(0);
 </script></body></html>
 """
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
     with open(path, "w") as f:
         f.write(page)
 
