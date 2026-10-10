@@ -9,12 +9,14 @@ There are various ways to represent a knot in current literature.
 4. 3D coordinates
 5. As closure of a braid. The braid can be represented by its braid word as a list. 
 
-The ``Knot`` class in `utils/knot.py` implements various operations on knots.
-1. 3 Reidemeister moves
-2. Jones polynomial
-3. Khovanov homology 
+The ``LinkDiagram`` class in `src/knotml/core/diagram.py` stores a diagram as a PD code and implements:
+1. The 3 Reidemeister moves in both directions, plus crossing changes (`core/moves.py`)
+2. A canonical key up to relabelling (`core/canonical.py`) and the determinant (`core/invariants.py`)
+3. Jones polynomial, Khovanov homology and other invariants via Regina/SnapPy (`oracles.py`)
 
-``utils/visualization.py`` implements visualizations of knots from the dual graph.
+See `planning/core-design.md` for the conventions and complexity.
+
+``src/knotml/visualization.py`` will implement visualizations of knots from the dual graph.
 1. Visualization as a knot diagram
 2. Visualization in 3D
 

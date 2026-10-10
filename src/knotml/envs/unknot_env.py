@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional, Tuple
 import gymnasium as gym
 import numpy as np
 
-from utils.knot import Knot, generate_random_knot, is_unknot
+from ..core import LinkDiagram
 
 
 Observation = Dict[str, np.ndarray]  # graph-style: {"adj": ..., "node": ...}
@@ -47,8 +47,9 @@ class UnknotEnv(gym.Env):
         if seed is not None:
             self._rng = np.random.default_rng(seed)
 
+        word = [int(g) for g in self._rng.choice([-2, -1, 1, 2], size=self.max_crossings // 2)]
         self.state = {
-            "knot": generate_random_knot(self.max_crossings),
+            "knot": LinkDiagram.from_braid(word, n_strands=3),
             "steps": 0,
             "is_unknot": False,
         }
@@ -75,8 +76,7 @@ class UnknotEnv(gym.Env):
         This attempts to visualize the current knot state using the graph-style
         observation produced by :meth:`_encode_observation`.
 
-        If ``matplotlib`` is unavailable, this will fall back to printing a
-        GraphViz DOT description.
+        If drawing is unavailable, this falls back to printing the PD code.
         """
 
         knot = self.state.get("knot")
@@ -85,16 +85,11 @@ class UnknotEnv(gym.Env):
             return
 
         try:
-            from utils.visualization import draw_knot_diagram
+            from ..visualization import visualize_knot_diagram
 
-            # We ignore the returned figure; the function will show it if possible.
-            draw_knot_diagram(knot, show=True)
+            visualize_knot_diagram(knot)
         except Exception:
-            # Fallback: print a lightweight description (e.g., DOT) when rendering
-            # is not supported in the current environment.
-            from utils.visualization import graph_to_dot
-
-            print(graph_to_dot(self._encode_observation()))
+            print(knot, knot.to_pd())
 
     def _make_observation_space(self) -> gym.Space:
         """Construct the Gym observation space for the graph representation."""
@@ -112,13 +107,15 @@ class UnknotEnv(gym.Env):
         return self.max_crossings * 3
 
     def _encode_observation(self) -> Observation:
-        """Encode the current canonical knot into the graph observation."""
-        knot: Optional[Knot] = self.state.get("knot")
+        """Encode the current diagram into the graph observation."""
+        knot: Optional[LinkDiagram] = self.state.get("knot")
         if knot is None:
             N = self.max_crossings
             return {"adj": np.zeros((N, N), dtype=np.float32), "node": np.zeros((N, 4), dtype=np.float32)}
 
-        return knot.to_graph(self.max_crossings)
+        # TODO: the encoder must keep the port order at each crossing (see
+        # planning/research-summary.md, section 3, item 3).
+        raise NotImplementedError("graph encoder for LinkDiagram not written yet")
 
     def _graph_observation(self) -> Dict[str, np.ndarray]:
         """Return a graph-style observation (adjacency + node features)."""
@@ -143,32 +140,18 @@ class UnknotEnv(gym.Env):
         return np.zeros((N, 3), dtype=np.float32)
 
     def _apply_action(self, action: int) -> None:
-        """Apply an action to the canonical knot state.
+        """Apply an action to the current diagram.
 
-        Actions are encoded as: (move_type, target_index).
-
-        - move_type 0: Reidemeister I at target_index
-        - move_type 1: Reidemeister II at target_index (paired with next crossing)
-        - move_type 2: Reidemeister III at target_index (affects triple)
+        Moves are anchored at ports and faces, not crossing indices (see
+        ``knotml.core.moves``), so decoding ``action`` into a ``Move`` depends on
+        the action-space design, which is still open (planning/research-summary.md,
+        section 2).  ``LinkDiagram.move_masks()`` gives O(n) legality masks.
         """
-        knot: Optional[Knot] = self.state.get("knot")
+        knot: Optional[LinkDiagram] = self.state.get("knot")
         if knot is None:
             return
 
-        move_type = action // self.max_crossings
-        target = action % self.max_crossings
-
-        if move_type == 0:
-            knot.reidemeister_I(target)
-        elif move_type == 1:
-            knot.reidemeister_II(target, (target + 1) % self.max_crossings)
-        elif move_type == 2:
-            knot.reidemeister_III(target, (target + 1) % self.max_crossings, (target + 2) % self.max_crossings)
-        else:
-            # Unknown action; no-op.
-            return
-
-        self.state["is_unknot"] = is_unknot(knot)
+        raise NotImplementedError("action decoding pending the action-space design")
 
     def _compute_reward(self) -> float:
         """Compute a reward based on whether the knot is reduced to an unknot."""

@@ -4,8 +4,6 @@ from __future__ import annotations
 
 import random
 
-from ..envs.unknot_env import UnknotEnv
-
 
 class RandomAgent:
     """A random policy agent for UnknotEnv."""
