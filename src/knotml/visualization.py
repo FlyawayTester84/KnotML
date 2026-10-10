@@ -34,8 +34,42 @@ def layout(d: LinkDiagram):
 
     Returns ``(components, crossings)``: per component, ``(label, strands)`` with
     the strands as point lists with gaps at undercrossings; and
-    ``(x, y, crossing index)`` triples.
+    ``(x, y, crossing index)`` triples.  The layout needs a connected projection,
+    so a split diagram is laid out piece by piece and the pieces placed side by side.
     """
+    pieces: dict[int, list[int]] = {}
+    for c, k in enumerate(d.diagram_component_of_crossing()):
+        pieces.setdefault(k, []).append(c)
+    if len(pieces) <= 1:
+        return _layout_connected(d)
+    components: list = []
+    crossings: list = []
+    x_end = 0.0
+    for members in pieces.values():
+        sub, original = _piece(d, members)
+        comps, xs = _layout_connected(sub)
+        points = [pt for _, comp in comps for line in comp for pt in line]
+        lo_x, lo_y = min(pt[0] for pt in points), min(pt[1] for pt in points)
+        hi_x = max(pt[0] for pt in points)
+        shift = x_end - lo_x + (0.2 * (hi_x - lo_x) if components else 0.0)  # leave a gap between pieces
+        components += [
+            (label, [[(x + shift, y - lo_y) for x, y in line] for line in comp]) for label, comp in comps
+        ]
+        crossings += [(x + shift, y - lo_y, original[c]) for x, y, c in xs]
+        x_end = hi_x + shift
+    return components, crossings
+
+
+def _piece(d: LinkDiagram, members: list[int]):
+    """The sub-diagram on the crossings ``members`` (one connected piece), and its crossing map back."""
+    new = {c: i for i, c in enumerate(members)}
+    nbr = [4 * new[d.nbr[4 * c + k] >> 2] + (d.nbr[4 * c + k] & 3) for c in members for k in range(4)]
+    labels = [d.label_of_port(4 * c + k) for c in members for k in (0, 1)]
+    sub = LinkDiagram(nbr, [d.signs[c] for c in members], labels=labels, trivial=[], check=False)
+    return sub, members
+
+
+def _layout_connected(d: LinkDiagram):
     import plink
 
     manager = to_spherogram(d).view(viewer=plink.LinkManager())

@@ -43,3 +43,15 @@ def test_crossingless_components_are_drawn_below_the_link():
     circles = re.findall(r'<circle cx="[\d.]+" cy="([\d.]+)" r="([\d.]+)"', svg)
     assert len(circles) == 2
     assert all(float(cy) - float(r) > lowest for cy, r in circles)
+
+
+def test_split_diagrams_are_drawn_piece_by_piece():
+    tref = KNOTS["3_1"][0]
+    d = LinkDiagram.from_pd(tref + [[a + 6 for a in q] for q in tref], n_unknots=1)
+    components, crossings = layout(d)
+    assert sorted(label for label, _ in components) == [0, 1]
+    assert sorted(c for _, _, c in crossings) == list(range(6))
+    left = max(x for label, comp in components if label == 0 for line in comp for x, _ in line)
+    right = min(x for label, comp in components if label == 1 for line in comp for x, _ in line)
+    assert left < right  # pieces side by side, not overlapping
+    assert to_svg(d, labels=True).count("<circle") == 1
