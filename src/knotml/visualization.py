@@ -62,20 +62,29 @@ def to_svg(
 ) -> str:
     """An SVG drawing of ``d``: one colour per component, an arrow showing each orientation.
 
-    Crossings listed in ``highlight`` are circled.
+    Crossings listed in ``highlight`` are circled.  Crossingless components are
+    drawn as labelled circles in a strip below the rest of the diagram.
     """
     components, crossings = layout(d) if d.n_crossings else ([], [])
     points = [p for _, comp in components for line in comp for p in line]
+    pad = 24
+    n_circles = d.n_unknots
+    strip = 0.22 * size if (n_circles and points) else 0.0  # height reserved for crossingless circles
+    gap = 0.05 * size if strip else 0.0  # space between the link and the strip
     if points:
         xs, ys = [p[0] for p in points], [p[1] for p in points]
-        x0, y0, span = min(xs), min(ys), max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
+        x0, y0 = min(xs), min(ys)
+        span_x, span_y = max(max(xs) - x0, 1.0), max(max(ys) - y0, 1.0)
     else:
-        x0, y0, span = 0.0, 0.0, 1.0
-    pad = 24
-    scale = (size - 2 * pad) / span
+        x0 = y0 = 0.0
+        span_x = span_y = 1.0
+    box_w, box_h = size - 2 * pad, size - 2 * pad - strip - gap
+    scale = min(box_w / span_x, box_h / span_y)
+    off_x = pad + (box_w - span_x * scale) / 2  # centre the link in the space above the strip
+    off_y = pad + (box_h - span_y * scale) / 2
 
     def xy(p):
-        return pad + (p[0] - x0) * scale, pad + (p[1] - y0) * scale
+        return off_x + (p[0] - x0) * scale, off_y + (p[1] - y0) * scale
 
     width = max(1.5, min(4.0, 0.25 * scale))
     out = [
@@ -93,14 +102,28 @@ def to_svg(
                 'stroke-linejoin="round" stroke-linecap="round"/>'
             )
         out.append(_arrow(comp, xy, color, 3 * width))
-    for k in range(d.n_unknots):  # crossingless components, drawn as separate circles
-        r = size / (4 + 2 * d.n_unknots)
-        cx = size - pad - r - k * 2.5 * r if points else size / 2 + (k - (d.n_unknots - 1) / 2) * 2.5 * r
-        cy = size - pad - r if points else size / 2
-        color = component_color(d.trivial_labels[k])
-        out.append(
-            f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="{width:.1f}"/>'
-        )
+    if n_circles:  # crossingless components: separate circles, evenly spaced in their own area
+        top = size - pad - strip if points else pad
+        height = strip if points else size - 2 * pad
+        slot = (size - 2 * pad) / n_circles
+        r = max(4.0, min(0.32 * height, 0.32 * slot))
+        if points:
+            line_y = top - gap / 2
+            out.append(
+                f'<line x1="{pad}" y1="{line_y:.1f}" x2="{size - pad}" y2="{line_y:.1f}" '
+                'stroke="#ddd" stroke-dasharray="4 4"/>'
+            )
+        for k, label in enumerate(d.trivial_labels):
+            cx, cy = pad + (k + 0.5) * slot, top + height / 2
+            color = component_color(label)
+            out.append(
+                f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="none" stroke="{color}" '
+                f'stroke-width="{width:.1f}"/>'
+            )
+            out.append(
+                f'<text x="{cx:.1f}" y="{cy + 0.3 * min(r, 14):.1f}" font-size="{min(r, 14):.1f}" '
+                f'text-anchor="middle" font-family="sans-serif" fill="{color}">K{label}</text>'
+            )
     marked = set(highlight)
     for x, y, label in crossings:
         if label in marked:

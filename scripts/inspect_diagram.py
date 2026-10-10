@@ -11,6 +11,8 @@ Usage:
     python scripts/inspect_diagram.py --view                   # open the final diagram in PLink
     python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --random 5 --trace   # Kirby moves
     python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --random 8 --verify --html kirby.html
+    python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --list HANDLE_SLIDE   # see the options
+    python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --move "HANDLE_SLIDE 0 10"   # apply one
 """
 
 from __future__ import annotations
@@ -32,7 +34,9 @@ from knotml import (  # noqa: E402
     KIRBY_KINDS,
     FramedLink,
     KirbyKind,
+    KirbyMove,
     LinkDiagram,
+    Move,
     MoveKind,
     determinant,
 )
@@ -81,7 +85,21 @@ def main() -> int:
     source.add_argument("--knotinfo", help="KnotInfo/LinkInfo name, e.g. 8_20")
     source.add_argument("--snappy", help='SnapPy name or code, e.g. K12n123 or "DT: [(4,6,2)]"')
     parser.add_argument("--framings", type=int, nargs="+", help="framings in component-label order: Kirby diagram")
-    parser.add_argument("--random", type=int, default=0, help="apply this many random moves first")
+    parser.add_argument(
+        "--move",
+        action="append",
+        default=[],
+        metavar="SPEC",
+        help='apply a specific move, e.g. "R1_ADD 8 -1", "R2_ADD 3 10", "R3 9", "BLOW_UP -1", '
+        '"BLOW_DOWN 2", "HANDLE_SLIDE 8 6"; repeatable, applied in order before --random',
+    )
+    parser.add_argument(
+        "--list",
+        metavar="KIND",
+        help="after all moves, list the legal moves of this kind (e.g. HANDLE_SLIDE, R2_ADD, BLOW_UP) "
+        "with what each anchor refers to",
+    )
+    parser.add_argument("--random", type=int, default=0, help="apply this many random moves (after --move)")
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument(
         "--max-crossings",
@@ -125,34 +143,49 @@ def main() -> int:
     if args.trace:
         print(describe("step 0: "))
     verify = make_verifier(framed if framed else d) if args.verify else None
-    failures = unknown = 0
+    failures = unknown = steps = 0
     history = [("start", d.copy(), set(), framed.framings if framed else None, "")]
-    shrinking = {MoveKind.R1_REMOVE, MoveKind.R2_REMOVE, MoveKind.R3, KirbyKind.BLOW_DOWN}
-    for step in range(1, args.random + 1):
-        if args.max_crossings is not None and d.n_crossings >= args.max_crossings:
-            options = obj.legal_moves(kinds & shrinking)
-            if not options:
-                print(f"stopping at step {step}: {d.n_crossings} crossings and no move that keeps the size")
-                break
-            move = rng.choice(options)
-        else:
-            move = obj.random_move(rng, kinds)
+
+    def apply(move) -> None:
+        nonlocal d, failures, unknown, steps
         touched = _touched_crossings(d, move)
-        obj.apply_inplace(move)
+        obj.apply_inplace(move)  # raises IllegalMoveError for an illegal move
         d = framed.diagram if framed else d  # a handle slide builds a new diagram
+        steps += 1
         if args.trace:
-            print(describe(f"step {step}: {move!r} -> "))
+            print(describe(f"step {steps}: {move!r} -> "))
         status = ""
         if verify:
             ok, status = verify(framed if framed else d)
             failures += ok is False
             unknown += ok is None
-            print(f"verify step {step}: {'ok' if ok else 'inconclusive' if ok is None else 'FAILED'} ({status})")
+            print(f"verify step {steps}: {'ok' if ok else 'inconclusive' if ok is None else 'FAILED'} ({status})")
         if args.html:
             new = set(range(history[-1][1].n_crossings, d.n_crossings))
             history.append((repr(move), d.copy(), touched | new, framed.framings if framed else None, status))
+
+    for spec in args.move:
+        try:
+            move = parse_move(spec)
+        except (ValueError, KeyError) as err:
+            parser.error(f"--move {spec!r}: {err}")
+        if isinstance(move, KirbyMove) and framed is None:
+            parser.error(f"--move {spec!r}: Kirby moves need --framings")
+        if not obj.is_legal(move):
+            parser.error(f"--move {spec!r}: {move!r} is not legal here (see --list {move.kind.name})")
+        apply(move)
+    shrinking = {MoveKind.R1_REMOVE, MoveKind.R2_REMOVE, MoveKind.R3, KirbyKind.BLOW_DOWN}
+    for _ in range(args.random):
+        if args.max_crossings is not None and d.n_crossings >= args.max_crossings:
+            options = obj.legal_moves(kinds & shrinking)
+            if not options:
+                print(f"stopping: {d.n_crossings} crossings and no move that keeps the size")
+                break
+            apply(rng.choice(options))
+        else:
+            apply(obj.random_move(rng, kinds))
     if verify:
-        print(f"verified {step} steps: {failures} failures, {unknown} inconclusive")
+        print(f"verified {steps} steps: {failures} failures, {unknown} inconclusive")
 
     print(d)
     print("PD:", d.to_pd() if d.n_crossings <= 30 else f"<{d.n_crossings} crossings>")
@@ -163,6 +196,8 @@ def main() -> int:
         print("framings:", framed.framings, "| linking matrix:", framed.linking_matrix())
         print("H1 of surgery:", framed.homology(), "| signature:", framed.signature())
         print("legal Kirby moves:", dict(Counter(m.kind.name for m in framed.legal_moves(KIRBY_KINDS))))
+    if args.list:
+        list_moves(framed if framed else d, args.list.upper())
     if args.bench:
         bench(d)
     if args.html:
@@ -173,6 +208,67 @@ def main() -> int:
 
         view(d)
     return 0
+
+
+def parse_move(spec: str):
+    """``"KIND a [b]"`` -> a Move or KirbyMove (anchors are ports; see --list)."""
+    name, *rest = spec.replace(",", " ").split()
+    name, vals = name.upper(), [int(v) for v in rest]
+    expected = {"R1_ADD": "a sign", "R2_ADD": "over under", "HANDLE_SLIDE": "slide over",
+                "BLOW_UP": "sign", "BLOW_DOWN": "label"}.get(name, "a")
+    if len(vals) != len(expected.split()):
+        raise ValueError(f"{name} takes {len(expected.split())} integer(s): {expected}")
+    if name in MoveKind.__members__:
+        kind = MoveKind[name]
+        if kind == MoveKind.R1_ADD:
+            return Move(kind, vals[0], sign=vals[1])
+        return Move(kind, vals[0], vals[1]) if kind == MoveKind.R2_ADD else Move(kind, vals[0])
+    kind = KirbyKind[name]
+    if kind == KirbyKind.BLOW_UP:
+        return KirbyMove(kind, sign=vals[0])
+    if kind == KirbyKind.BLOW_DOWN:
+        return KirbyMove(kind, a=vals[0])
+    return KirbyMove(kind, vals[0], vals[1])
+
+
+def list_moves(obj, kind_name: str) -> None:
+    """Print every legal move of one kind with a description of its anchors."""
+    framed = obj if isinstance(obj, FramedLink) else None
+    d = framed.diagram if framed else obj
+    kinds = {**MoveKind.__members__, **KirbyKind.__members__}
+    if kind_name not in kinds:
+        raise SystemExit(f"unknown move kind {kind_name}; choose from {', '.join(kinds)}")
+    kind = kinds[kind_name]
+    moves = (framed.legal_moves([kind]) if framed else d.legal_moves([kind])) if kind in ALL_KINDS or framed else []
+    face = d.face_of_port()
+
+    def where(p: int) -> str:
+        if p < 0:
+            return f"crossingless component K{d.trivial_labels[-1 - p]} (anchor {p})"
+        tail = d.edge_tail(p)
+        side = "left" if p == tail else "right"
+        return f"K{d.label_of_port(p)} crossing {p >> 2} slot {p & 3}: {side} side of edge {tail}->{d.nbr[tail]}, face {face[p]}"
+
+    print(f"{len(moves)} legal {kind_name} moves:")
+    for m in moves:
+        if kind == KirbyKind.BLOW_UP:
+            text = f"add a split {m.sign:+d}-framed unknot"
+        elif kind == KirbyKind.BLOW_DOWN:
+            text = f"remove K{m.a} (split unknot, framing {framed.framing(m.a):+d})"
+        elif kind == KirbyKind.HANDLE_SLIDE:
+            adds = d.is_out(m.a) == d.is_out(m.b)  # same side of both edges: untwisted band adds
+            text = f"slide [{where(m.a)}] over [{where(m.b)}] -> {'adds' if adds else 'subtracts'} the handle"
+        elif kind == MoveKind.CROSSING_CHANGE:
+            text = f"crossing {m.a} (K{d.label_of_port(4 * m.a)} under K{d.label_of_port(4 * m.a + 1)})"
+        elif kind == MoveKind.R2_ADD:
+            text = f"push [{where(m.a)}] over [{where(m.b)}]"
+        elif kind == MoveKind.R1_ADD:
+            text = f"kink of sign {m.sign:+d} on [{where(m.a)}]"
+        else:
+            text = where(m.a)
+        args = {KirbyKind.BLOW_UP: f"{m.sign}", KirbyKind.BLOW_DOWN: f"{m.a}", MoveKind.R1_ADD: f"{m.a} {m.sign}"}
+        spec = f"{kind_name} {args.get(kind, f'{m.a} {m.b}' if kind in (MoveKind.R2_ADD, KirbyKind.HANDLE_SLIDE) else m.a)}"
+        print(f'  --move "{spec}"  # {text}')
 
 
 def _touched_crossings(d: LinkDiagram, move) -> set:

@@ -32,3 +32,14 @@ def test_components_are_coloured_by_label():
     assert sorted(label for label, _ in components) == [0, 1]
     svg = to_svg(hopf)
     assert component_color(0) in svg and component_color(1) in svg
+
+
+def test_crossingless_components_are_drawn_below_the_link():
+    import re
+
+    d = LinkDiagram.from_pd(KNOTS["4_1"][0], n_unknots=2)
+    svg = to_svg(d, size=400)
+    lowest = max(float(y) for pts in re.findall(r'polyline points="([^"]+)"', svg) for y in re.findall(r",([\d.]+)", pts))
+    circles = re.findall(r'<circle cx="[\d.]+" cy="([\d.]+)" r="([\d.]+)"', svg)
+    assert len(circles) == 2
+    assert all(float(cy) - float(r) > lowest for cy, r in circles)

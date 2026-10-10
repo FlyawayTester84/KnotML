@@ -222,6 +222,25 @@ python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --random 1
     --max-crossings 60 --verify --html outputs/kirby_walk.html && open outputs/kirby_walk.html
 ```
 
+**Apply specific moves.** `--list KIND` prints every legal move of one kind, ready to paste,
+with what its anchors refer to (component, crossing, slot, side of edge, face; for slides
+whether the handle is added or subtracted). `--move "KIND args"` applies a move; repeat it to
+apply a sequence in order (illegal moves are refused). A knot alone has nothing to slide over,
+so blow up an unknot, push the knot's edge across it, then slide:
+
+```bash
+python scripts/inspect_diagram.py --knotinfo 4_1 --framings 5 --move "BLOW_UP -1" --list R2_ADD
+python scripts/inspect_diagram.py --knotinfo 4_1 --framings 5 --move "BLOW_UP -1" --move "R2_ADD 0 -1" --list HANDLE_SLIDE
+python scripts/inspect_diagram.py --knotinfo 4_1 --framings 5 --move "BLOW_UP -1" --move "R2_ADD 0 -1" \
+    --move "HANDLE_SLIDE 10 22" --verify --trace --html outputs/fig8_kirby.html
+```
+
+Move arguments: `R1_ADD a sign`, `R2_ADD over under`, `R1_REMOVE a`, `R2_REMOVE a`, `R3 a`,
+`CROSSING_CHANGE c`, `BLOW_UP sign`, `BLOW_DOWN label`, `HANDLE_SLIDE slide over`. Anchors are
+ports (`4·crossing + slot`, matching the crossing numbers in the drawings); negative anchors
+`-1, -2, …` name crossingless components. In Python the same is
+`F.apply_inplace(KirbyMove(KirbyKind.HANDLE_SLIDE, a=10, b=22))`.
+
 `--framings` (one per component, in label order) makes the diagram a framed link: the summary
 adds the linking matrix, H₁, signature and legal Kirby moves, and `--random` steps include Kirby
 moves (handle slides, blow-ups/downs). `--verify` checks every step: the diagram is valid, H₁ is
