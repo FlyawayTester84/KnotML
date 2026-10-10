@@ -5,7 +5,7 @@ import random
 import pytest
 from _util import random_diagram
 
-from knotml import ISOTOPY_KINDS, TRIVIAL, MoveKind
+from knotml import ISOTOPY_KINDS, MoveKind
 from knotml.interop import from_regina, to_regina
 
 regina = pytest.importorskip("regina")
@@ -61,10 +61,10 @@ def test_legal_sets_and_results_match_regina(seed):
             for y in range(m):
                 if x != y and R.hasR2(*arc(R, d, x), *arc(R, d, y)):
                     theirs.add((x, y))
-        assert {(mv.a, mv.b) for mv in by_kind(MoveKind.R2_ADD) if TRIVIAL not in (mv.a, mv.b)} == theirs
+        assert {(mv.a, mv.b) for mv in by_kind(MoveKind.R2_ADD) if mv.a >= 0 and mv.b >= 0} == theirs
         for mv in ours:
-            if TRIVIAL in (mv.a, mv.b) and mv.kind in (MoveKind.R1_ADD, MoveKind.R2_ADD):
-                continue
+            if mv.a < 0 or (mv.kind == MoveKind.R2_ADD and mv.b < 0):
+                continue  # crossingless anchors have no Regina arc to compare with
             assert sig(regina_result(R, d, mv)) == sig(to_regina(d.apply(mv))), mv
 
 

@@ -8,7 +8,12 @@ A diagram with ``n`` crossings is two flat integer lists plus one counter:
   ``4c + k``, ``k = 0..3``, listed counterclockwise starting at the incoming
   under-strand; ``nbr[p]`` is the port at the other end of the edge at ``p``.
 * ``sign`` (length ``n``): crossing signs, ``+1`` or ``-1``.
-* ``n_unknots``: crossingless unknotted components, which PD codes cannot show.
+* ``labels`` (length ``2n``): the component label of each strand passage,
+  ``labels[2c]`` for the under-strand of crossing ``c`` and ``labels[2c + 1]`` for
+  the over-strand.  Moves keep labels attached to their components, so data
+  such as framings can be stored per label.
+* ``trivial``: labels of the crossingless unknotted components, which PD codes
+  cannot show.
 
 This is the PD convention of KnotInfo, KnotAtlas, SnapPy/spherogram, Regina and
 Sage: a PD tuple ``(a, b, c, d)`` lists the edge labels at ports ``0..3``.
@@ -40,7 +45,7 @@ from typing import Iterable, Optional, Sequence
 
 from . import moves as _moves
 from .moves import Move, MoveKind
-from .ports import next_ccw
+from .ports import next_ccw, strand_index as _strand
 
 __all__ = ["LinkDiagram", "PDError"]
 
@@ -59,7 +64,7 @@ class LinkDiagram:
     :meth:`canonical_key` as a dictionary key for the diagram up to relabelling.
     """
 
-    __slots__ = ("_nbr", "_sign", "_n_unknots", "_face", "_face_start", "_dcomp", "_comps")
+    __slots__ = ("_nbr", "_sign", "_label", "_trivial", "_face", "_face_start", "_dcomp", "_comps")
 
     def __init__(
         self,
@@ -67,12 +72,30 @@ class LinkDiagram:
         sign: Sequence[int] = (),
         n_unknots: int = 0,
         *,
+        labels: Optional[Sequence[int]] = None,
+        trivial: Optional[Sequence[int]] = None,
         check: bool = True,
     ) -> None:
+        """Low-level constructor from port arrays.
+
+        Without ``labels``, components are labelled ``0, 1, ...`` in order of their
+        first crossing, then the ``n_unknots`` crossingless ones.  ``trivial``
+        (labels of crossingless components) overrides ``n_unknots``.
+        """
         self._nbr = list(nbr)
         self._sign = list(sign)
-        self._n_unknots = int(n_unknots)
         self._invalidate()
+        if labels is None:
+            self._label = [0] * (2 * len(self._sign))
+            for k, seq in enumerate(self._walk_components()):
+                for p in seq:
+                    self._label[_strand(p)] = self._label[_strand(self._nbr[p])] = k
+            first = len(self._comps or ()) if self._sign else 0
+        else:
+            self._label = list(labels)
+            first = max(self._label, default=-1) + 1
+        self._trivial = list(trivial) if trivial is not None else list(range(first, first + int(n_unknots)))
+        self._comps = None
         if check:
             self.check()
 
@@ -105,7 +128,16 @@ class LinkDiagram:
             a, b = ports
             nbr[a] = b
             nbr[b] = a
-        return cls(nbr, _orient(nbr, label), n_unknots)
+        out = cls(nbr, _orient(nbr, label), n_unknots, check=False)
+        try:  # number components by their smallest PD label, as KnotInfo/LinkInfo list them
+            order = sorted(range(len(out._comps_raw())), key=lambda k: min(label[p] for p in out._comps_raw()[k]))
+            rank = {k: i for i, k in enumerate(order)}
+            out._label = [rank[v] for v in out._label]
+        except TypeError:  # labels without an order: keep the default numbering
+            pass
+        out._invalidate()
+        out.check()
+        return out
 
     @classmethod
     def from_braid(cls, word: Iterable[int], n_strands: Optional[int] = None) -> LinkDiagram:
@@ -156,7 +188,7 @@ class LinkDiagram:
 
     def copy(self) -> LinkDiagram:
         """An independent copy (caches are not copied)."""
-        return LinkDiagram(self._nbr, self._sign, self._n_unknots, check=False)
+        return LinkDiagram(self._nbr, self._sign, labels=self._label, trivial=self._trivial, check=False)
 
     # ------------------------------------------------------------------
     # Basic data
@@ -169,12 +201,29 @@ class LinkDiagram:
     @property
     def n_unknots(self) -> int:
         """Number of crossingless unknotted components."""
-        return self._n_unknots
+        return len(self._trivial)
 
     @property
     def n_components(self) -> int:
         """Number of link components, including crossingless ones."""
-        return len(self._ensure_components()) + self._n_unknots
+        return len(self._ensure_components()) + len(self._trivial)
+
+    def label_of_port(self, p: int) -> int:
+        """Component label of the strand through port ``p``."""
+        return self._label[_strand(p)]
+
+    def component_labels(self) -> list[int]:
+        """Labels of the components with crossings, in the order of :meth:`components`."""
+        return [self._label[_strand(seq[0])] for seq in self._ensure_components()]
+
+    @property
+    def trivial_labels(self) -> Sequence[int]:
+        """Labels of the crossingless components (read-only view; index ``i`` is anchor ``-1 - i``)."""
+        return self._trivial
+
+    def labels(self) -> list[int]:
+        """Labels of all components, sorted."""
+        return sorted(self.component_labels() + list(self._trivial))
 
     @property
     def nbr(self) -> Sequence[int]:
@@ -247,30 +296,56 @@ class LinkDiagram:
         return self._ensure_dcomp()
 
     def components(self) -> list[list[int]]:
-        """Link components with crossings, each as the tails of its edges in order."""
+        """Link components with crossings, in label order, each as the tails of its edges in order."""
         return [list(seq) for seq in self._ensure_components()]
 
     def component_writhes(self) -> list[int]:
-        """Sum of signs of each component's self-crossings (its blackboard framing)."""
-        comp_of = self._component_of_port()
-        out = [0] * len(self._ensure_components())
+        """Sum of signs of each component's self-crossings (its blackboard framing), in label order."""
+        index = {lab: k for k, lab in enumerate(self.component_labels())}
+        out = [0] * len(index)
+        lab = self._label
         for c, s in enumerate(self._sign):
-            k = comp_of[4 * c]
-            if comp_of[4 * c + 1] == k:
-                out[k] += s
+            if lab[2 * c] == lab[2 * c + 1]:
+                out[index[lab[2 * c]]] += s
         return out
 
     def linking_matrix(self) -> list[list[int]]:
-        """Pairwise linking numbers of the components with crossings."""
-        comp_of = self._component_of_port()
-        r = len(self._ensure_components())
-        twice = [[0] * r for _ in range(r)]
+        """Pairwise linking numbers of the components with crossings, in label order."""
+        index = {lab: k for k, lab in enumerate(self.component_labels())}
+        twice = [[0] * len(index) for _ in index]
+        lab = self._label
         for c, s in enumerate(self._sign):
-            i, j = comp_of[4 * c], comp_of[4 * c + 1]
+            i, j = index[lab[2 * c]], index[lab[2 * c + 1]]
             if i != j:
                 twice[i][j] += s
                 twice[j][i] += s
         return [[v // 2 for v in row] for row in twice]
+
+    def reverse_component(self, label: int) -> list[int]:
+        """Reverse the orientation of the component with this label, in place, in O(n).
+
+        Where the under-strand is reversed the ports rotate by two (slot 0 must be
+        the incoming under-strand), so port ``p`` there becomes ``p ^ 2``; those
+        crossings are returned.  The sign flips where exactly one strand is reversed.
+        """
+        nbr, sign, lab = self._nbr, self._sign, self._label
+        rotated = []
+        for c in range(len(sign)):
+            under, over = lab[2 * c] == label, lab[2 * c + 1] == label
+            if under:
+                rotated.append(c)
+                base = 4 * c
+                old = nbr[base : base + 4]
+                for k in range(4):
+                    q = old[(k + 2) & 3]
+                    if q >> 2 == c:
+                        q = base + (((q & 3) + 2) & 3)
+                    nbr[base + k] = q
+                    nbr[q] = base + k
+            if under != over:
+                sign[c] = -sign[c]
+        self._invalidate()
+        return rotated
 
     # ------------------------------------------------------------------
     # Export
@@ -337,11 +412,14 @@ class LinkDiagram:
     # Canonical form
     # ------------------------------------------------------------------
 
-    def canonical_key(self) -> bytes:
-        """Bytes identifying the oriented diagram up to relabelling (see :mod:`canonical`)."""
+    def canonical_key(self, attr=None) -> bytes:
+        """Bytes identifying the oriented diagram up to relabelling (see :mod:`canonical`).
+
+        ``attr(label) -> int`` adds per-component data such as framings to the key.
+        """
         from .canonical import canonical_key
 
-        return canonical_key(self)
+        return canonical_key(self, attr)
 
     def is_isomorphic(self, other: LinkDiagram) -> bool:
         return self.canonical_key() == other.canonical_key()
@@ -361,8 +439,8 @@ class LinkDiagram:
         n, m = len(sign), len(nbr)
         if m != 4 * n:
             raise PDError(f"{m} ports for {n} crossings")
-        if self._n_unknots < 0:
-            raise PDError("negative number of crossingless components")
+        if len(self._label) != 2 * n:
+            raise PDError(f"{len(self._label)} strand labels for {n} crossings")
         if any(s != 1 and s != -1 for s in sign):
             raise PDError("crossing signs must be +1 or -1")
         for p in range(m):
@@ -382,15 +460,25 @@ class LinkDiagram:
             excess[dcomp[start >> 2]] += 1
         if any(excess):
             raise PDError("not planar: the code describes a virtual (non-classical) diagram")
+        seen_labels = set(self._trivial)
+        if len(seen_labels) != len(self._trivial):
+            raise PDError("crossingless components share a label")
+        for seq in self._ensure_components():
+            lab = self._label[_strand(seq[0])]
+            if any(self._label[_strand(p)] != lab or self._label[_strand(nbr[p])] != lab for p in seq):
+                raise PDError(f"component labelled {lab} carries other labels")
+            if lab in seen_labels:
+                raise PDError(f"label {lab} is used by two components")
+            seen_labels.add(lab)
 
     def __eq__(self, other: object) -> bool:
-        """Exact equality of the stored data (not up to relabelling)."""
+        """Exact equality of the ports and signs (not up to relabelling; component labels ignored)."""
         if not isinstance(other, LinkDiagram):
             return NotImplemented
         return (
             self._sign == other._sign
             and self._nbr == other._nbr
-            and self._n_unknots == other._n_unknots
+            and len(self._trivial) == len(other._trivial)
         )
 
     __hash__ = None  # type: ignore[assignment]  # mutable
@@ -446,31 +534,32 @@ class LinkDiagram:
             self._dcomp = dcomp
         return self._dcomp
 
+    def _walk_components(self) -> list[list[int]]:
+        """Components in order of their first crossing (no labels needed); cached as ``_comps``."""
+        nbr, sign = self._nbr, self._sign
+        seen = bytearray(len(nbr))
+        comps = []
+        for c in range(len(sign)):
+            for p in (4 * c + 2, 4 * c + (1 if sign[c] > 0 else 3)):
+                if seen[p]:
+                    continue
+                seq = []
+                while not seen[p]:
+                    seen[p] = 1
+                    seq.append(p)
+                    p = nbr[p] ^ 2
+                comps.append(seq)
+        self._comps = comps
+        return comps
+
+    def _comps_raw(self) -> list[list[int]]:
+        return self._comps if self._comps is not None else self._walk_components()
+
     def _ensure_components(self) -> list[list[int]]:
         if self._comps is None:
-            nbr, sign = self._nbr, self._sign
-            seen = bytearray(len(nbr))
-            comps = []
-            for c in range(len(sign)):
-                for p in (4 * c + 2, 4 * c + (1 if sign[c] > 0 else 3)):
-                    if seen[p]:
-                        continue
-                    seq = []
-                    while not seen[p]:
-                        seen[p] = 1
-                        seq.append(p)
-                        p = nbr[p] ^ 2
-                    comps.append(seq)
-            self._comps = comps
-        return self._comps
-
-    def _component_of_port(self) -> list[int]:
-        nbr = self._nbr
-        comp_of = [0] * len(nbr)
-        for k, seq in enumerate(self._ensure_components()):
-            for p in seq:
-                comp_of[p] = comp_of[nbr[p]] = k
-        return comp_of
+            self._walk_components()
+            self._comps.sort(key=lambda seq: self._label[_strand(seq[0])])  # type: ignore[union-attr]
+        return self._comps  # type: ignore[return-value]
 
 
 def _orient(nbr: list[int], label: list) -> list[int]:

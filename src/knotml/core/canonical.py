@@ -11,12 +11,18 @@ the O(n²) worst case (very symmetric diagrams) is rarely reached.
 
 Reflection, reversal and mirroring are *not* quotiented out: the key describes
 the oriented diagram on the oriented sphere, which is what moves act on.
+
+With ``attr``, each component's walk starts with a token for ``attr(label)``
+(e.g. its framing), so the key also distinguishes per-component data.
+Component labels themselves are bookkeeping and never enter the key.
 """
 
 from __future__ import annotations
 
 from array import array
-from typing import TYPE_CHECKING, Optional, Sequence
+from typing import TYPE_CHECKING, Callable, Optional, Sequence
+
+from .ports import strand_index
 
 if TYPE_CHECKING:
     from .diagram import LinkDiagram
@@ -24,40 +30,69 @@ if TYPE_CHECKING:
 __all__ = ["canonical_key"]
 
 
-def canonical_key(d: LinkDiagram) -> bytes:
-    nbr, sign = d._nbr, d._sign
+def canonical_key(d: LinkDiagram, attr: Optional[Callable[[int], int]] = None) -> bytes:
+    """Bytes identifying ``d`` up to relabelling, plus ``attr(label)`` of each component if given."""
+    nbr, sign, labels = d._nbr, d._sign, d._label
+    tag = None
+    if attr is not None:
+
+        def tag(p: int) -> int:
+            return -2 - _zigzag(attr(labels[strand_index(p)]))
+
     pieces: dict[int, list[int]] = {}
     for c, k in enumerate(d._ensure_dcomp()):
         pieces.setdefault(k, []).append(c)
-    codes = sorted(_min_code(nbr, sign, crossings) for crossings in pieces.values())
-    out = array("i", (d._n_unknots, len(codes)))
+    codes = sorted(_min_code(nbr, sign, crossings, tag) for crossings in pieces.values())
+    circles = sorted(_zigzag(attr(lab)) for lab in d._trivial) if attr is not None else []
+    out = array("q", (len(d._trivial), *circles, len(codes)))
     for code in codes:
         out.append(len(code))
         out.extend(code)
     return out.tobytes()
 
 
-def _min_code(nbr: Sequence[int], sign: Sequence[int], crossings: list[int]) -> list[int]:
+def _zigzag(v: int) -> int:
+    """Injective map from integers to non-negative integers."""
+    return 2 * v if v >= 0 else -2 * v - 1
+
+
+def _min_code(nbr: Sequence[int], sign: Sequence[int], crossings: list[int], tag) -> list[int]:
     best: Optional[list[int]] = None
     for c in crossings:
         for start in (4 * c + 2, 4 * c + (1 if sign[c] > 0 else 3)):
-            code = _code(nbr, sign, start, best)
+            code = _code(nbr, sign, start, best, tag)
             if code is not None:
                 best = code
     assert best is not None
     return best
 
 
-def _code(nbr: Sequence[int], sign: Sequence[int], start: int, best: Optional[list[int]]) -> Optional[list[int]]:
-    """The walk code from ``start``, or ``None`` as soon as it cannot beat ``best``."""
+def _code(nbr: Sequence[int], sign: Sequence[int], start: int, best: Optional[list[int]], tag) -> Optional[list[int]]:
+    """The walk code from ``start``, or ``None`` as soon as it cannot beat ``best``.
+
+    Tokens: crossing arrivals are >= 0, component separators -1, component tags <= -2.
+    """
     label: dict[int, int] = {}
     order: list[int] = []
     walked: set[int] = set()
     out: list[int] = []
     smaller = best is None
+
+    def push(tok: int) -> bool:  # False once the code can no longer beat ``best``
+        nonlocal smaller
+        if not smaller:
+            ref = best[len(out)]  # type: ignore[index]
+            if tok > ref:
+                return False
+            smaller = tok < ref
+        out.append(tok)
+        return True
+
     pos = 0
     p = start
     while True:
+        if tag is not None and not push(tag(p)):
+            return None
         while p not in walked:
             walked.add(p)
             q = nbr[p]
@@ -69,12 +104,8 @@ def _code(nbr: Sequence[int], sign: Sequence[int], start: int, best: Optional[li
                 tok = 8 * lab + 2 * (q & 3) + (sign[c] > 0)
             else:
                 tok = 8 * lab + 2 * (q & 3)
-            if not smaller:
-                ref = best[len(out)]  # type: ignore[index]
-                if tok > ref:
-                    return None
-                smaller = tok < ref
-            out.append(tok)
+            if not push(tok):
+                return None
             p = q ^ 2
         while pos < len(order):  # next component: first numbered crossing with an unwalked strand
             c = order[pos]
@@ -88,8 +119,5 @@ def _code(nbr: Sequence[int], sign: Sequence[int], start: int, best: Optional[li
             pos += 1
         else:
             return out if smaller else None
-        if not smaller:
-            if best[len(out)] < -1:  # type: ignore[index]
-                return None
-            smaller = best[len(out)] > -1  # type: ignore[index]
-        out.append(-1)
+        if not push(-1):
+            return None

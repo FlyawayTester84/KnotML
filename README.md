@@ -30,7 +30,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 45 passed, 1 skipped
+python -m pytest                            # whole suite: 58 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -178,7 +178,62 @@ anchored at ports:
 Legality checks are O(1), `apply_inplace` is O(1). See `planning/core-design.md` for the
 details and measured timings.
 
-### 7. Benchmark
+### 7. Kirby calculus (framed links)
+
+`FramedLink` (`knotml/kirby.py`) is a diagram with an integer framing on each component: the
+framing coefficient (linking number with the framing push-off), not the blackboard framing, so
+Reidemeister moves never change it. It describes integral surgery on S³ and the 4-manifold
+B⁴ ∪ 2-handles.
+
+```python
+from knotml import FramedLink, KirbyKind, KirbyMove
+from knotml.interop import from_knotinfo
+
+F = FramedLink(from_knotinfo("L5a1{0}"), [5, 2])     # Whitehead link; framings in component-label order
+F.linking_matrix(), F.homology(), F.signature()      # [[5, 0], [0, 2]], [10], 2
+
+slide = F.legal_moves([KirbyKind.HANDLE_SLIDE])[0]   # HANDLE_SLIDE(slide=0, over=10)
+G = F.apply(slide)
+G.framings, G.linking_matrix(), G.homology()         # {0: 5, 1: 7}, [[5, -5], [-5, 7]], [10]
+
+H = G.apply(KirbyMove(KirbyKind.BLOW_UP, sign=-1))   # add a split (-1)-framed unknot
+H.framings, H.homology(), H.signature()              # {0: 5, 1: 7, 2: -1}, [10], 1
+
+F.to_snappy().is_isometric_to(G.to_snappy())         # True: same surgered 3-manifold (needs snappy)
+F.legal_moves(calculus="4-manifold")                 # isotopy + handle slides only (no blow-ups)
+```
+
+Moves (`F.legal_moves()`, `F.apply(move)`, `F.apply_inplace(move)`):
+
+| Move | Anchor | Effect |
+|---|---|---|
+| Reidemeister `Move`s | as for diagrams | isotopy; framings unchanged |
+| `BLOW_UP` | `sign` = ±1 | add a split crossingless ±1-framed unknot |
+| `BLOW_DOWN` | `a` = label | remove a split crossingless ±1-framed unknot |
+| `HANDLE_SLIDE` | `a` = side on K_i, `b` = side on K_j, sharing a face | K_i becomes K_i # (push-off of K_j); f_i += f_j ± 2·lk(K_i, K_j) |
+
+Components keep their labels through every move (`F.labels()`, `F.diagram.label_of_port(p)`).
+`homology()` and `signature()` come from the linking matrix; `to_snappy()` gives the surgered
+manifold. From the command line:
+
+```bash
+python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --random 4 --seed 2 --trace
+python scripts/inspect_diagram.py --knotinfo "L5a1{0}" --framings 5 2 --random 12 --seed 1 \
+    --max-crossings 60 --verify --html outputs/kirby_walk.html && open outputs/kirby_walk.html
+```
+
+`--framings` (one per component, in label order) makes the diagram a framed link: the summary
+adds the linking matrix, H₁, signature and legal Kirby moves, and `--random` steps include Kirby
+moves (handle slides, blow-ups/downs). `--verify` checks every step: the diagram is valid, H₁ is
+unchanged and, with SnapPy, the surgered manifold is isometric to the start (for hyperbolic
+surgeries; on very large diagrams SnapPy may fail to find the hyperbolic structure, reported as
+"inconclusive" rather than a failure). Each slide multiplies the crossing count, so
+`--max-crossings N` restricts the walk to moves that do not add crossings once it reaches `N`
+(a slide taken just below `N` can still overshoot). On the HTML page each component keeps its
+colour, and captions show the framings and H₁. See `planning/kirby-design.md` for the
+construction and verification.
+
+### 8. Benchmark
 
 ```bash
 python scripts/inspect_diagram.py --knotinfo 3_1 --random 100 --bench
@@ -199,6 +254,7 @@ src/knotml/
     ports.py       port arithmetic
   interop.py     exact conversion to/from Regina, SnapPy/spherogram, KnotInfo
   oracles.py     certified unknot test, genus, Jones, Alexander, signature (optional deps)
+  kirby.py       FramedLink: framings, blow-ups/downs, handle slides, surgery invariants
   visualization.py  spherogram drawings: SVG export and PLink viewer (optional deps)
   envs/          Gymnasium environment (awaiting the action-space design)
   agents/        baseline agents
@@ -221,4 +277,5 @@ Also refer to ``description.md``.
 2. ~~Implement Reidemeister moves~~ (`knotml/core/moves.py`)
 3. Choose the action space and observation encoder, then finish `UnknotEnv`
 4. ~~Basic visualization~~ (`knotml/visualization.py`); layouts that stay continuous across moves
-5. Kirby calculus: `FramedLink` with framings, blow-ups and handle slides
+5. ~~Kirby calculus: `FramedLink` with framings, blow-ups and handle slides~~ (`knotml/kirby.py`);
+   next: dotted circles (1-handles), handle cancellations, an action space for Kirby moves

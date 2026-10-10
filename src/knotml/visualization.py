@@ -19,22 +19,37 @@ from typing import Iterable
 from .core import LinkDiagram
 from .interop import to_spherogram
 
-__all__ = ["layout", "to_svg", "view", "visualize_knot_diagram"]
+__all__ = ["layout", "to_svg", "view", "visualize_knot_diagram", "component_color"]
 
 _COLORS = ["#1f4e9c", "#c0392b", "#1e8449", "#8e44ad", "#d35400", "#117a8b", "#7d6608"]
+
+
+def component_color(label: int) -> str:
+    """Drawing colour of the component with this label (stable across moves)."""
+    return _COLORS[label % len(_COLORS)]
 
 
 def layout(d: LinkDiagram):
     """Spherogram's orthogonal layout of ``d``.
 
-    Returns ``(components, crossings)``: per component, its strands as point
-    lists with gaps at undercrossings; and ``(x, y, crossing index)`` triples.
+    Returns ``(components, crossings)``: per component, ``(label, strands)`` with
+    the strands as point lists with gaps at undercrossings; and
+    ``(x, y, crossing index)`` triples.
     """
     import plink
 
     manager = to_spherogram(d).view(viewer=plink.LinkManager())
-    components = [polylines for polylines, _ in manager.polylines(break_at_overcrossings=False)]
     crossings = [(c.x, c.y, int(c.label)) for c in manager.Crossings]  # PLink labels are strings
+    components = []
+    strands = manager.polylines(break_at_overcrossings=False)  # same order as arrow_components()
+    for arrows, (polylines, _) in zip(manager.arrow_components(), strands, strict=True):
+        arrows = set(arrows)
+        label = next(  # the component's label, read off any crossing it passes
+            d.label_of_port(4 * int(c.label) + (0 if c.under in arrows else 1))
+            for c in manager.Crossings
+            if c.under in arrows or c.over in arrows
+        )
+        components.append((label, polylines))
     return components, crossings
 
 
@@ -50,7 +65,7 @@ def to_svg(
     Crossings listed in ``highlight`` are circled.
     """
     components, crossings = layout(d) if d.n_crossings else ([], [])
-    points = [p for comp in components for line in comp for p in line]
+    points = [p for _, comp in components for line in comp for p in line]
     if points:
         xs, ys = [p[0] for p in points], [p[1] for p in points]
         x0, y0, span = min(xs), min(ys), max(max(xs) - min(xs), max(ys) - min(ys), 1.0)
@@ -69,8 +84,8 @@ def to_svg(
     ]
     if title:
         out.append(f"<title>{escape(title)}</title>")
-    for i, comp in enumerate(components):
-        color = _COLORS[i % len(_COLORS)]
+    for label, comp in components:
+        color = component_color(label)
         for line in comp:
             pts = " ".join("%.1f,%.1f" % xy(p) for p in line)
             out.append(
@@ -82,7 +97,7 @@ def to_svg(
         r = size / (4 + 2 * d.n_unknots)
         cx = size - pad - r - k * 2.5 * r if points else size / 2 + (k - (d.n_unknots - 1) / 2) * 2.5 * r
         cy = size - pad - r if points else size / 2
-        color = _COLORS[(len(components) + k) % len(_COLORS)]
+        color = component_color(d.trivial_labels[k])
         out.append(
             f'<circle cx="{cx:.1f}" cy="{cy:.1f}" r="{r:.1f}" fill="none" stroke="{color}" stroke-width="{width:.1f}"/>'
         )

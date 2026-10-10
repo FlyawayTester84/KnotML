@@ -9,7 +9,17 @@ from __future__ import annotations
 from typing import Sequence
 
 TRIVIAL = -1
-"""Anchor standing for a crossingless unknotted component (PD codes cannot show these)."""
+"""Anchor of the first crossingless component; ``-1 - i`` names the ``i``-th (see ``trivial_anchor``)."""
+
+
+def trivial_anchor(i: int) -> int:
+    """Anchor naming crossingless component ``i`` (``LinkDiagram.trivial_labels[i]``)."""
+    return -1 - i
+
+
+def strand_index(p: int) -> int:
+    """Index into the per-strand label list of the strand passage through port ``p``."""
+    return ((p >> 2) << 1) | (p & 1)
 
 
 def next_ccw(p: int) -> int:

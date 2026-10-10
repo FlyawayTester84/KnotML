@@ -10,7 +10,10 @@ A diagram with `n` crossings is stored as two flat lists plus a counter:
 - `nbr` (length `4n`): crossing `c` owns **ports** `4c..4c+3`, counterclockwise
   from the incoming under-strand (the KnotInfo/Regina/SnapPy/Sage PD
   convention). `nbr[p]` is the port at the other end of the edge at `p`.
-- `sign` (length `n`); `n_unknots` counts crossingless components.
+- `sign` (length `n`); `labels` (length `2n`): a component label per strand passage, kept
+  attached to components by every move; `trivial`: labels of crossingless components
+  (anchor `-1 - i` names the `i`-th). Framings and other per-component data key on labels
+  (see `kirby-design.md`).
 
 So `p ^ 2` is where the strand through `p` continues, odd ports are over, and
 the slot where the over-strand enters (3 or 1) is given by the sign. This is

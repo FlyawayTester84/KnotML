@@ -8,6 +8,7 @@ from knotml import (
     ALL_KINDS,
     ISOTOPY_KINDS,
     TRIVIAL,
+    trivial_anchor,
     IllegalMoveError,
     LinkDiagram,
     Move,
@@ -56,8 +57,9 @@ def test_bigon_removal():
 
 def test_trivial_component_moves():
     d = LinkDiagram.unknot(2)
-    assert d.is_legal(Move(MoveKind.R2_ADD, TRIVIAL, TRIVIAL))
-    inv = d.apply_inplace(Move(MoveKind.R2_ADD, TRIVIAL, TRIVIAL))
+    assert not d.is_legal(Move(MoveKind.R2_ADD, TRIVIAL, TRIVIAL))  # a circle with itself
+    assert d.is_legal(Move(MoveKind.R2_ADD, TRIVIAL, trivial_anchor(1)))
+    inv = d.apply_inplace(Move(MoveKind.R2_ADD, TRIVIAL, trivial_anchor(1)))
     assert d.n_crossings == 2 and d.n_unknots == 0
     d.apply_inplace(inv)
     assert d.is_trivial() and d.n_unknots == 2
@@ -125,7 +127,7 @@ def test_masks_agree_with_legal_moves(seed):
         pair = (face[:, None] == face[None, :]) | (piece[:, None] != piece[None, :])
         pair &= ~np.eye(m, dtype=bool) & (nbr[:, None] != np.arange(m)[None, :])
         expected = {(int(x), int(y)) for x, y in zip(*np.nonzero(pair), strict=True)}
-        got = {(mv.a, mv.b) for mv in moves if mv.kind == MoveKind.R2_ADD and TRIVIAL not in (mv.a, mv.b)}
+        got = {(mv.a, mv.b) for mv in moves if mv.kind == MoveKind.R2_ADD and mv.a >= 0 and mv.b >= 0}
         assert got == expected
         for mv in moves:
             assert d.is_legal(mv)

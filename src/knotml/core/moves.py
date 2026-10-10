@@ -11,18 +11,22 @@ after ``p`` (an edge's tail names its left side, its head its right side), so
 kind                 anchors                                    legal when
 ===================  =========================================  ==========================================
 ``R1_REMOVE``        ``a``: the corner inside a monogon         face of ``a`` is a monogon
-``R1_ADD``           ``a``: side receiving the kink;            always; ``a = TRIVIAL`` needs a
-                     ``sign``: sign of the new crossing         crossingless component
+``R1_ADD``           ``a``: side receiving the kink;            always (``a < 0``: that crossingless
+                     ``sign``: sign of the new crossing         component must exist)
 ``R2_REMOVE``        ``a``: bigon side of its upper edge        face of ``a`` is a bigon on two crossings
                                                                 and the edge at ``a`` is over at both ends
 ``R2_ADD``           ``a``: side of the edge pushed over,       the edges differ and the sides share a
                      ``b``: side of the edge pushed under       face, or lie in different pieces of the
-                                                                projection; ``TRIVIAL`` allowed
+                                                                projection; crossingless anchors allowed
 ``R3``               ``a``: triangle side of its top edge       face of ``a`` is a triangle on three
                                                                 crossings and the edge at ``a`` is over
                                                                 at both ends
 ``CROSSING_CHANGE``  ``a``: crossing                            always (not an isotopy)
 ===================  =========================================  ==========================================
+
+A negative anchor ``-1 - i`` (``trivial_anchor(i)``; ``TRIVIAL == -1``) names the
+``i``-th crossingless component, ``d.trivial_labels[i]``.  Moves keep every
+strand's component label, so per-component data (e.g. framings) survives them.
 
 Each legal move has exactly one anchor, so enumerations have no duplicates.
 
@@ -46,7 +50,7 @@ from typing import TYPE_CHECKING, Iterable, NamedTuple, Optional
 
 import numpy as np
 
-from .ports import TRIVIAL, next_ccw, prev_ccw, sigma
+from .ports import TRIVIAL, next_ccw, prev_ccw, sigma, strand_index, trivial_anchor
 
 if TYPE_CHECKING:
     from .diagram import LinkDiagram
@@ -56,6 +60,7 @@ __all__ = [
     "MoveKind",
     "IllegalMoveError",
     "TRIVIAL",
+    "trivial_anchor",
     "ISOTOPY_KINDS",
     "NON_INCREASING_KINDS",
     "ALL_KINDS",
@@ -125,13 +130,15 @@ def _triangle(nbr: list[int], x: int) -> bool:
     return a != b and b != c and a != c
 
 
+def _anchor_ok(d: LinkDiagram, a: int) -> bool:
+    return 0 <= a < len(d._nbr) if a >= 0 else -1 - a < len(d._trivial)
+
+
 def _r2_add_ok(d: LinkDiagram, x: int, y: int) -> bool:
     m = len(d._nbr)
-    if x == TRIVIAL or y == TRIVIAL:
-        other = y if x == TRIVIAL else x
-        need = 2 if other == TRIVIAL else 1
-        return d._n_unknots >= need and (other == TRIVIAL or 0 <= other < m)
-    if not (0 <= x < m and 0 <= y < m) or x == y or d._nbr[x] == y:
+    if x < 0 or y < 0:
+        return x != y and _anchor_ok(d, x) and _anchor_ok(d, y)
+    if not (x < m and y < m) or x == y or d._nbr[x] == y:
         return False
     face = d._ensure_faces()
     if face[x] == face[y]:
@@ -148,7 +155,7 @@ def is_legal(d: LinkDiagram, move: Move) -> bool:
     if kind == MoveKind.R1_ADD:
         if s != 1 and s != -1:
             return False
-        return d._n_unknots > 0 if a == TRIVIAL else 0 <= a < len(nbr)
+        return _anchor_ok(d, a)
     if kind == MoveKind.CROSSING_CHANGE:
         return 0 <= a < len(d._sign)
     if not 0 <= a < len(nbr):
@@ -179,7 +186,7 @@ def legal_moves(d: LinkDiagram, kinds: Iterable[MoveKind] = ISOTOPY_KINDS) -> li
     if MoveKind.R3 in kinds:
         out += [Move(MoveKind.R3, p) for p in range(1, m, 2) if _triangle(nbr, p)]
     if MoveKind.R1_ADD in kinds:
-        anchors = list(range(m)) + ([TRIVIAL] if d._n_unknots else [])
+        anchors = list(range(m)) + [trivial_anchor(i) for i in range(len(d._trivial))]
         out += [Move(MoveKind.R1_ADD, p, TRIVIAL, s) for p in anchors for s in (1, -1)]
     if MoveKind.R2_ADD in kinds:
         out += _r2_add_moves(d)
@@ -202,11 +209,11 @@ def _r2_add_moves(d: LinkDiagram) -> list[Move]:
         for j, gj in enumerate(groups):
             if i != j:
                 out += [Move(R2, x, y) for x in gi for y in gj]
-    if d._n_unknots:
-        ports = range(len(d._nbr))
-        out += [Move(R2, x, TRIVIAL) for x in ports] + [Move(R2, TRIVIAL, y) for y in ports]
-        if d._n_unknots >= 2:
-            out.append(Move(R2, TRIVIAL, TRIVIAL))
+    ports = range(len(d._nbr))
+    circles = [trivial_anchor(i) for i in range(len(d._trivial))]
+    for t in circles:
+        out += [Move(R2, x, t) for x in ports] + [Move(R2, t, y) for y in ports]
+        out += [Move(R2, t, u) for u in circles if u != t]
     return out
 
 
@@ -279,16 +286,18 @@ _R1_WIRING = {
 def _r1_add(d: LinkDiagram, move: Move) -> Move:
     nbr, sign = d._nbr, d._sign
     x, s = move.a, move.sign
-    left = x == TRIVIAL or d.is_out(x)
+    left = x < 0 or d.is_out(x)
     from_tail, to_head, (la, lb), mono = _R1_WIRING[(left, s)]
     X = len(nbr)
-    if x == TRIVIAL:
-        d._n_unknots -= 1
+    if x < 0:
+        lab = d._trivial.pop(-1 - x)
     else:
+        lab = d._label[strand_index(x)]
         tail, head = (x, nbr[x]) if left else (nbr[x], x)
     sign.append(s)
     nbr.extend((-1, -1, -1, -1))
-    if x == TRIVIAL:
+    d._label += (lab, lab)
+    if x < 0:
         _link(nbr, X + from_tail, X + to_head)
     else:
         _link(nbr, tail, X + from_tail)
@@ -303,11 +312,9 @@ def _r1_remove(d: LinkDiagram, move: Move) -> Move:
     k = x & 3
     s = d._sign[x >> 2]
     left = k >= 2  # loop on slots {2,3} or {3,0}; see _R1_WIRING
-    ends = _splice(d, [(x - k + ((k + 2) & 3), x - k + ((k + 3) & 3))])
-    anchor = TRIVIAL
-    a = next(iter(ends.values()))
-    if a is not None:
-        tail = a if d.is_out(a) else nbr[a]
+    anchor = next(iter(_splice(d, [(x - k + ((k + 2) & 3), x - k + ((k + 3) & 3))]).values()))
+    if anchor >= 0:
+        tail = anchor if d.is_out(anchor) else nbr[anchor]
         anchor = tail if left else nbr[tail]
     anchor = _delete_crossings(d, [x >> 2]).get(anchor, anchor)
     return Move(MoveKind.R1_ADD, anchor, TRIVIAL, s)
@@ -325,24 +332,27 @@ def _r2_add(d: LinkDiagram, move: Move) -> Move:
     nbr, sign = d._nbr, d._sign
     x, y = move.a, move.b
     # x is the east end of E1 and y the west end of E2 (that is where their sides face F).
-    e1 = 1 if x == TRIVIAL or not d.is_out(x) else -1  # E1 runs eastward
-    e2 = 1 if y == TRIVIAL or d.is_out(y) else -1  # E2 runs eastward
+    e1 = 1 if x < 0 or not d.is_out(x) else -1  # E1 runs eastward
+    e2 = 1 if y < 0 or d.is_out(y) else -1  # E2 runs eastward
     w, s_, e, n_ = _R2_COMPASS[e2]
-    west1 = nbr[x] if x != TRIVIAL else TRIVIAL
-    east2 = nbr[y] if y != TRIVIAL else TRIVIAL
+    west1 = nbr[x] if x >= 0 else x
+    east2 = nbr[y] if y >= 0 else y
+    lab1 = d._label[strand_index(x)] if x >= 0 else d._trivial[-1 - x]
+    lab2 = d._label[strand_index(y)] if y >= 0 else d._trivial[-1 - y]
+    for t in sorted(t for t in (x, y) if t < 0):  # most negative anchor = largest index: remove it first
+        d._trivial.pop(-1 - t)
     A = len(nbr)
     B = A + 4
     sign += (e1 * e2, -e1 * e2)
     nbr.extend((-1,) * 8)
-    if x == TRIVIAL:
-        d._n_unknots -= 1
+    d._label += (lab2, lab1, lab2, lab1)  # E1 passes over, E2 under, at both crossings
+    if x < 0:
         _link(nbr, A + n_, B + n_)
     else:
         _link(nbr, west1, A + n_)
         _link(nbr, B + n_, x)
     _link(nbr, A + s_, B + s_)
-    if y == TRIVIAL:
-        d._n_unknots -= 1
+    if y < 0:
         _link(nbr, B + e, A + w)
     else:
         _link(nbr, y, A + w)
@@ -360,9 +370,8 @@ def _r2_remove(d: LinkDiagram, move: Move) -> Optional[Move]:
     ends = _splice(d, [(aN, bN), (aW, bE)])
     east1, west2 = ends[bN], ends[aW]
     reloc = _delete_crossings(d, [aS >> 2, bS >> 2])
-    x = TRIVIAL if east1 is None else reloc.get(east1, east1)
-    y = TRIVIAL if west2 is None else reloc.get(west2, west2)
-    if x != TRIVIAL and y != TRIVIAL and (x == y or nbr[x] == y):
+    x, y = reloc.get(east1, east1), reloc.get(west2, west2)
+    if x >= 0 and y >= 0 and (x == y or nbr[x] == y):
         return None  # E1 and E2 merged into one edge: undoing needs an edge pushed over itself
     return Move(MoveKind.R2_ADD, x, y)
 
@@ -404,6 +413,8 @@ def _crossing_change(d: LinkDiagram, move: Move) -> Move:
             q = base + (((q & 3) - r) & 3)
         _link(nbr, base + k, q)
     sign[c] = -sign[c]
+    lab = d._label
+    lab[2 * c], lab[2 * c + 1] = lab[2 * c + 1], lab[2 * c]  # the strands swap over/under
     return move
 
 
@@ -429,7 +440,7 @@ def _splice(d: LinkDiagram, pairs: list[tuple[int, int]]) -> dict[int, Optional[
     joins inside the deleted region.  Each strand is reconnected to itself
     outside the region, or becomes a crossingless component if it closes up.
     Returns, for every port in ``pairs``, the surviving port reached by leaving
-    along its edge (``None`` on a closed loop).
+    along its edge, or the (negative) anchor of the new crossingless component.
     """
     nbr = d._nbr
     through = {}
@@ -437,6 +448,7 @@ def _splice(d: LinkDiagram, pairs: list[tuple[int, int]]) -> dict[int, Optional[
         through[a] = b
         through[b] = a
     traced = {p: _trace(nbr, through, p) for p in through}
+    ends = {p: end for p, (end, _) in traced.items()}
     done: set[int] = set()
     for a, b in pairs:
         if a in done:
@@ -445,10 +457,13 @@ def _splice(d: LinkDiagram, pairs: list[tuple[int, int]]) -> dict[int, Optional[
         done.update(va)
         done.update(vb)
         if ea is None:
-            d._n_unknots += 1
+            loop = trivial_anchor(len(d._trivial))
+            d._trivial.append(d._label[strand_index(a)])
+            for p in va:
+                ends[p] = loop
         else:
             _link(nbr, ea, eb)
-    return {p: end for p, (end, _) in traced.items()}
+    return ends  # type: ignore[return-value]
 
 
 def _trace(nbr: list[int], through: dict[int, int], start: int) -> tuple[Optional[int], list[int]]:
@@ -468,7 +483,7 @@ def _delete_crossings(d: LinkDiagram, crossings: Iterable[int]) -> dict[int, int
 
     Returns ``{old port: new port}`` for every port that moved.
     """
-    nbr, sign = d._nbr, d._sign
+    nbr, sign, lab = d._nbr, d._sign, d._label
     reloc: dict[int, int] = {}
     origin: dict[int, int] = {}
     for c in sorted(crossings, reverse=True):
@@ -484,6 +499,8 @@ def _delete_crossings(d: LinkDiagram, crossings: Iterable[int]) -> dict[int, int
                 reloc[o] = dst + k
                 origin[dst + k] = o
             sign[c] = sign[last]
+            lab[2 * c : 2 * c + 2] = lab[2 * last : 2 * last + 2]
         del nbr[-4:]
+        del lab[-2:]
         sign.pop()
     return reloc

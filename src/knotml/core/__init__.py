@@ -8,6 +8,7 @@ from .moves import (
     NON_INCREASING_KINDS,
     TRIVIAL,
     IllegalMoveError,
+    trivial_anchor,
     Move,
     MoveKind,
 )
@@ -19,6 +20,7 @@ __all__ = [
     "MoveKind",
     "IllegalMoveError",
     "TRIVIAL",
+    "trivial_anchor",
     "ALL_KINDS",
     "ISOTOPY_KINDS",
     "NON_INCREASING_KINDS",
