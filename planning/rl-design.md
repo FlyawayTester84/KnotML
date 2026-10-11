@@ -26,6 +26,7 @@ extra (PyTorch, PyYAML).*
 | `envs/rewards.py` | `zero`, `sparse`, `potential`, `my_reward`, `example`, `module:function` | the `reward` section; edit `my_reward` in `envs/my_rewards.py` |
 | `rl/trainer.py` | loop, CSV/TensorBoard logs, evaluation, checkpoints, resume | |
 | `rl/evaluate.py` | success rate on fresh scrambles; recorded episodes as step pages | |
+| `rl/solve.py` | a trained agent on a given diagram: greedy and sampled attempts, step limit, cycle stop | `scripts/solve_link.py` |
 
 **Adding an algorithm.**
 

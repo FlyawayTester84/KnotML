@@ -10,7 +10,7 @@ from .core import LinkDiagram
 from .handlebody import Handlebody
 from .kirby import FramedLink
 
-__all__ = ["add_diagram_arguments", "diagram_from_args", "kirby_from_args"]
+__all__ = ["add_diagram_arguments", "diagram_from_args", "kirby_from_args", "parse_framings", "source_args"]
 
 
 def add_diagram_arguments(parser: argparse.ArgumentParser) -> None:
@@ -51,12 +51,30 @@ def diagram_from_args(args: argparse.Namespace, default: Optional[Sequence[int]]
     return None
 
 
+def parse_framings(values: Sequence[str]) -> list:
+    """``["dot", "-2"]`` -> ``[None, -2]``: an integer framing per component, ``None`` for a dotted circle."""
+    return [None if v.lower() in ("dot", "d", ".") else int(v) for v in values]
+
+
+def source_args(args: argparse.Namespace) -> str:
+    """The diagram options as they would be typed again (for printing replay commands)."""
+    import shlex
+
+    if args.pd:
+        return f"--pd {shlex.quote(args.pd)}"
+    if args.knotinfo:
+        return f"--knotinfo {shlex.quote(args.knotinfo)}"
+    if args.snappy:
+        return f"--snappy {shlex.quote(args.snappy)}"
+    return "--braid " + " ".join(map(str, args.braid or [1, 1, 1]))
+
+
 def kirby_from_args(args: argparse.Namespace, d: LinkDiagram) -> Union[FramedLink, Handlebody, None]:
     """``d`` with the ``--framings`` given: a FramedLink, a Handlebody (any ``dot``, ``--four`` or
     ``--closed``), or ``None`` without ``--framings``.  Raises ``ValueError`` for bad framings."""
     if not args.framings:
         return None
-    comps = [None if v.lower() in ("dot", "d", ".") else int(v) for v in args.framings]
+    comps = parse_framings(args.framings)
     if None in comps or args.four or args.closed:
         return Handlebody(d, comps, closed=args.closed)
     return FramedLink(d, comps)

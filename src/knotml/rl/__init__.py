@@ -9,8 +9,9 @@ Needs the ``rl`` extra (PyTorch, PyYAML).  Pieces, each replaceable:
 * :mod:`~knotml.rl.curriculum`: scramble-length curriculum.
 * :mod:`~knotml.rl.trainer`: the training loop, logging and checkpoints.
 * :mod:`~knotml.rl.evaluate`: success rates and recorded episodes.
+* :mod:`~knotml.rl.solve`: a trained agent (from ``models/``) on a given diagram.
 
-Scripts: ``scripts/train_agent.py`` and ``scripts/evaluate_agent.py``.
+Scripts: ``scripts/train_agent.py``, ``scripts/evaluate_agent.py`` and ``scripts/solve_link.py``.
 """
 
 from .algorithms import ALGORITHMS, Algorithm, make_algorithm, register_algorithm

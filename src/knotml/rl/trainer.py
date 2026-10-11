@@ -49,12 +49,27 @@ def resolve_device(name: str) -> torch.device:
     return device
 
 
-def load_policy(path: str, device: Optional[torch.device] = None):
-    """``(policy, config)`` from a checkpoint written by :class:`Trainer`."""
+def load_policy(path: str, device: Optional[torch.device] = None, **capacity: Optional[int]):
+    """``(policy, config)`` from a checkpoint written by :class:`Trainer`.
+
+    ``max_crossings``, ``max_components`` and ``max_actions`` rebuild the
+    policy for another environment capacity (the returned config says which).
+    The ``gnn`` weights do not depend on it; a policy whose weights do fails to
+    load with a size mismatch.
+    """
     state = torch.load(path, map_location="cpu", weights_only=False)
     cfg = Config.from_dict(state["config"])
     spec = EnvSpec(**{k: tuple(map(tuple, v)) if k == "kind_fields" else (tuple(v) if isinstance(v, list) else v)
                       for k, v in state["spec"].items()})
+    changes = {k: int(v) for k, v in capacity.items() if v is not None}
+    if changes:
+        unknown = set(changes) - {"max_crossings", "max_components", "max_actions"}
+        if unknown:
+            raise TypeError(f"unknown capacity argument(s): {', '.join(sorted(unknown))}")
+        env = dataclasses.replace(cfg.env, **changes)
+        cfg = dataclasses.replace(cfg, env=env)
+        spec = dataclasses.replace(spec, n_ports=4 * env.max_crossings, n_components=env.max_components,
+                                   n_actions=env.max_actions)
     policy = make_policy(cfg.policy.name, spec, cfg.policy.params)
     policy.load_state_dict(state["policy"])
     return policy.to(device or resolve_device(cfg.run.device)), cfg

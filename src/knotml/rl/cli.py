@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from typing import Optional, Sequence
 
-__all__ = ["train_main", "evaluate_main"]
+__all__ = ["train_main", "evaluate_main", "solve_main"]
 
 
 def train_main(argv: Optional[Sequence[str]] = None) -> int:
@@ -96,3 +96,132 @@ def evaluate_main(argv: Optional[Sequence[str]] = None) -> int:
             write_steps_page(path, frames, calculus)
             print(f"wrote {path} ({'solved' if solved else 'not solved'} in {len(frames) - 1} steps)")
     return 0
+
+
+def solve_main(argv: Optional[Sequence[str]] = None) -> int:
+    """``scripts/solve_link.py``: let a trained agent reduce a given Kirby diagram, move by move."""
+    from ..cli import add_diagram_arguments
+
+    parser = argparse.ArgumentParser(
+        prog="solve_link.py",
+        description="Let a trained agent reduce a Kirby diagram to the empty diagram, at most --max-steps moves. "
+        "Prints the moves (and a command replaying them) and writes them as a step-through HTML page. "
+        "Exit status 0 when solved, 1 when not.",
+        epilog="examples:\n"
+        "  python scripts/solve_link.py --list-agents\n"
+        "  python scripts/solve_link.py --knotinfo \"L2a1{1}\" --framings dot 3 --agent ppo-small-cpu\n"
+        "  python scripts/solve_link.py --pd \"[[4,1,3,2],[2,3,1,4]]\" --framings dot 0 --max-steps 20\n"
+        "  python scripts/solve_link.py --knotinfo \"L7a6{0}\" --framings dot -2 --attempts 10 --open",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    add_diagram_arguments(parser)
+    parser.add_argument("--agent", help="a folder name under --models, or a checkpoint .pt "
+                        "(default: the agent, if --models holds exactly one)")
+    parser.add_argument("--checkpoint", default="best", choices=["best", "latest"], help="which checkpoint (best)")
+    parser.add_argument("--models", default="models", help="folder of trained agents (default models)")
+    parser.add_argument("--list-agents", action="store_true", help="list the agents in --models and exit")
+    parser.add_argument("--max-steps", type=int, default=20, help="most moves the agent may try (default 20)")
+    parser.add_argument("--attempts", type=int, default=1,
+                        help="the first attempt is greedy, later ones sample from the policy; the shortest "
+                        "solution is shown (default 1)")
+    parser.add_argument("--seed", type=int, default=0)
+    parser.add_argument("--device", help="cpu (default), cuda or mps")
+    parser.add_argument("--max-crossings", type=int, help="environment capacity (default: the agent's, raised to fit)")
+    parser.add_argument("--max-components", type=int, help="environment capacity (default: the agent's, raised to fit)")
+    parser.add_argument("--max-actions", type=int, help="candidate moves shown to the agent (default: the agent's)")
+    parser.add_argument("--html", default="outputs/solve.html",
+                        help="the step-through page (default outputs/solve.html)")
+    parser.add_argument("--no-html", action="store_true", help="do not write the page")
+    parser.add_argument("--open", action="store_true", help="open the page in the browser")
+    parser.add_argument("--trace", action="store_true", help="print the PD code after every move")
+    args = parser.parse_args(argv)
+
+    import shlex
+
+    import torch
+
+    from ..cli import diagram_from_args, parse_framings, source_args
+    from ..notation import format_components
+    from ..play.session import components_of
+    from .solve import Agent, list_agents, reachable, solve
+
+    agents = list_agents(args.models)
+    if args.list_agents:
+        if not agents:
+            print(f"no agents in {args.models}/")
+        for a in agents:
+            closed = " (closed)" if a["closed"] else ""
+            print(f"{a['name']:<20} {a['calculus']}{closed}, {a['steps']:,} training steps, "
+                  f"scrambles up to {a['scramble'][1]}, capacity {a['max_crossings']} crossings / "
+                  f"{a['max_components']} components, {a['policy']} hidden {a.get('hidden')} layers {a.get('layers')}"
+                  f"  [{a['path']}]")
+        return 0
+    if not (args.braid or args.pd or args.knotinfo or args.snappy):
+        parser.error("give a link: --knotinfo NAME, --pd CODE, --braid WORD or --snappy NAME")
+    if not args.framings:
+        parser.error("give --framings: one per component in label order, an integer or 'dot' (a 1-handle)")
+    if args.agent is None:
+        if len(agents) != 1:
+            names = ", ".join(a["name"] for a in agents) or "none"
+            parser.error(f"choose an agent with --agent (agents in {args.models}/: {names})")
+        args.agent = agents[0]["name"]
+    device = torch.device(args.device or "cpu")
+    try:
+        agent = Agent.load(args.agent, args.checkpoint, device, args.models, args.max_crossings,
+                           args.max_components, args.max_actions)
+        if args.closed and not agent.closed:
+            parser.error(f"--closed, but agent {agent.name!r} was trained without 2/3-handle moves")
+        start = agent.start_from(diagram_from_args(args, default=None), parse_framings(args.framings))
+        if args.max_crossings is None and args.max_components is None:
+            agent = agent.with_capacity_for(start)
+    except (FileNotFoundError, ValueError) as err:
+        parser.error(str(err))
+
+    env, trained = agent.config.env, agent.trained
+    print(f"agent {agent.name} ({agent.path}): {agent.calculus}{' (closed)' if agent.closed else ''}, "
+          f"{trained['steps']:,} training steps on scrambles of up to {trained['scramble'][1]} moves")
+    if (env.max_crossings, env.max_components) != (trained["max_crossings"], trained["max_components"]):
+        print(f"  capacity raised to {env.max_crossings} crossings / {env.max_components} components "
+              f"(trained with {trained['max_crossings']} / {trained['max_components']}): larger than it has seen")
+    ok, note = reachable(start)
+    print(f"start: {start.diagram.n_crossings} crossings, components {format_components(components_of(start))}")
+    print(f"  {note}" + ("" if ok else " -> the empty diagram cannot be reached; running the agent anyway"))
+
+    attempts = solve(agent, start, max_steps=args.max_steps, attempts=max(1, args.attempts), seed=args.seed)
+    for k, a in enumerate(attempts, 1):
+        how = "sampled" if a.sampled else "greedy"
+        n = f"{len(a.steps)} move{'s' if len(a.steps) != 1 else ''}"
+        verdict = {"solved": f"solved in {n}", "cycle": f"stopped after {n}: "
+                   "back at an earlier diagram (a greedy agent would loop)", "no legal move": "no legal move left",
+                   "step limit": f"not solved within {args.max_steps} moves"}[a.stop]
+        print(f"attempt {k} ({how}): {verdict}")
+    solved = [a for a in attempts if a.solved]
+    best = min(solved, key=lambda a: len(a.steps)) if solved else attempts[0]
+    plural = "s" if len(best.steps) != 1 else ""
+    print(f"\n{'solution' if solved else 'greedy attempt'} ({len(best.steps)} move{plural}):")
+    for i, (step, frame) in enumerate(zip(best.steps, best.frames[1:], strict=True), 1):
+        print(f"  {i:>3}. {step.spec:<22} p {step.probability:.2f}  value {step.value:+.2f}  -> "
+              f"{step.n_crossings} crossings, {step.n_components} components")
+        if args.trace:
+            print(f"       PD {frame[1].to_pd()}")
+    if solved:
+        flags = " --four" if agent.calculus == "4-manifold" and None not in parse_framings(args.framings) else ""
+        flags += " --closed" if agent.closed else ""
+        moves = " ".join(f"--move {shlex.quote(s.spec)}" for s in best.steps)
+        print("\nreplay and check the invariants along the way:\n"
+              f"  python scripts/inspect_diagram.py {source_args(args)} --framings {' '.join(args.framings)}{flags} "
+              f"{moves} --verify")
+    if not args.no_html:
+        try:
+            from ..visualization import write_steps_page
+
+            write_steps_page(args.html, best.frames, "4" if agent.calculus == "4-manifold" else "3")
+            print(f"\nwrote {args.html}")
+            if args.open:
+                import webbrowser
+                from pathlib import Path
+
+                webbrowser.open(Path(args.html).resolve().as_uri())
+        except ImportError as err:  # drawing needs spherogram/plink (the oracles extra)
+            print(f"\nno page: {err} (install the oracles extra to draw)")
+    return 0 if solved else 1

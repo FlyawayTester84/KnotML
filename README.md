@@ -31,7 +31,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 120 passed, 1 skipped
+python -m pytest                            # whole suite: 125 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -529,6 +529,54 @@ laptop CPU) solves 97.6% of fresh scrambles of 1–12 moves and 85.7% of 12-move
 model is saved in `models/ppo-small-cpu/`: weights, `config.yaml`, training curves and a README
 with commands to evaluate, retrain or resume it. Details are in `planning/rl-design.md`.
 
+#### Test an agent on your own link
+
+`scripts/solve_link.py` runs a trained agent from `models/` on a link you give, with framings
+(`dot` marks a 1-handle). It allows at most `--max-steps` moves (default 20).
+
+```bash
+python scripts/solve_link.py --list-agents                                    # what is in models/
+python scripts/solve_link.py --knotinfo "L2a1{1}" --framings dot 3 --agent ppo-small-cpu --max-steps 20
+python scripts/solve_link.py --pd "[[4,1,3,2],[2,3,1,4]]" --framings dot 0 --open      # any PD code
+python scripts/solve_link.py --knotinfo "L7a6{0}" --framings dot -2 --attempts 10      # greedy + 9 sampled
+```
+
+It prints:
+
+- **the agent** and how it was trained;
+- **an invariant check on the start**, against the empty diagram. This condition is necessary
+  only: a contractible Mazur manifold passes it but can never be emptied;
+- **each attempt's outcome:**
+  - solved;
+  - not solved within the step limit;
+  - stopped because a greedy attempt returned to an earlier diagram (it would loop);
+- **the moves**, with the policy's probability for each and its value estimate;
+- **when solved, an `inspect_diagram.py ... --move ... --verify` command** that replays the
+  moves and checks the invariants at every step.
+
+The best attempt is written as a step-through page, `outputs/solve.html` by default (`--html PATH`,
+`--no-html`). The exit status is 0 when solved and 1 when not.
+
+- **Agent choice:** `--agent` takes a folder name under `models/` or a checkpoint path (`--checkpoint
+  best|latest`). It can be omitted when `models/` holds a single agent.
+- **Calculus:** the agent's calculus decides the kind of diagram. A 4-manifold agent reads integer
+  framings as 2-handles; a 3-manifold agent does not accept dots.
+- **Capacity:** the network's weights do not depend on the environment's capacity, so a diagram
+  larger than the agent saw in training still runs, with the capacity raised to fit (and a
+  warning). Override it with `--max-crossings` / `--max-components`.
+
+In Python:
+
+```python
+from knotml.rl.solve import Agent, solve
+from knotml.interop import from_knotinfo
+
+agent = Agent.load("ppo-small-cpu")                         # models/ppo-small-cpu/checkpoints/best.pt
+start = agent.start_from(from_knotinfo("L2a1{1}"), [None, 3])
+attempt = solve(agent, start, max_steps=20)[0]
+print(attempt.solved, [step.spec for step in attempt.steps])
+```
+
 ### 11. Benchmark
 
 ```bash
@@ -560,7 +608,8 @@ src/knotml/
   envs/          Gymnasium environments: KirbyEnv (reduce a Kirby diagram to empty), UnknotEnv (stub)
     rewards.py     reward registry: zero, sparse, potential, my_reward, example, module:function
     my_rewards.py  my_reward: the reward function to edit
-  rl/            training agents (PyTorch): config, vector envs, gnn policy, PPO, curriculum, trainer
+  rl/            training agents (PyTorch): config, vector envs, gnn policy, PPO, curriculum, trainer;
+                 solve.py runs a trained agent on a given diagram
     algorithms/    Algorithm interface + registry; ppo.py
   play/          playing KirbyEnv by hand
     session.py     an episode with undo, previews and a record
@@ -572,6 +621,7 @@ scripts/
   play_env.py         play the Kirby environment in the terminal, watching it on an HTML page
   train_agent.py      train an agent (configs/ppo.yaml)
   evaluate_agent.py   success rate of a checkpoint; agent episodes as HTML
+  solve_link.py       run a trained agent on a given link (step limit, moves, replay command, HTML)
 configs/         training hyperparameters (YAML)
 models/          trained agents kept with the project: weights, config, curves (ppo-small-cpu/)
 tests/           pytest suite (cross-checked against Regina when installed)
