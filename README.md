@@ -487,6 +487,9 @@ python scripts/evaluate_agent.py runs/kirby-ppo/checkpoints/best.pt --html outpu
 
 On a CUDA machine, install the PyTorch build for your CUDA version (see pytorch.org) before the
 `rl` extra. `--set section.key=value` overrides any entry of the YAML; unknown keys are errors.
+For long runs on a remote GPU server, follow `planning/remote-training.md`. It covers setup, the
+settings to change (including the curriculum), running detached, monitoring and bringing the
+agent back.
 
 **Setup.**
 
