@@ -75,7 +75,64 @@ renumbers edges `1..2n` along each component, so labels may differ from the inpu
 **Draw your own knot:** run `python -m plink.app`, draw the diagram, choose
 **Info → PD code**, and paste the code into `--pd`.
 
-### 4. Random walks
+### 4. Apply moves step by step
+
+Pick a link, look at it, list the legal moves of one kind, apply one, look again, repeat.
+
+**Command line.** Nothing is random when you use `--move`, so re-running with the same moves rebuilds
+the same diagram; each run adds one more `--move` (ports in `--list` refer to the diagram after the
+moves before it):
+
+```bash
+# 1. pick a link and look at it
+python scripts/inspect_diagram.py --knotinfo "L4a1{0}" --html outputs/work.html && open outputs/work.html
+# 2. list the legal moves of a kind (each line is a ready-to-paste --move)
+python scripts/inspect_diagram.py --knotinfo "L4a1{0}" --list R2_ADD
+# 3. apply one, refresh the page, and list the options for the next move
+python scripts/inspect_diagram.py --knotinfo "L4a1{0}" --move "R2_ADD 0 14" --list R1_ADD --html outputs/work.html
+# 4. repeat: keep the earlier --move flags and append the next one
+python scripts/inspect_diagram.py --knotinfo "L4a1{0}" --move "R2_ADD 0 14" --move "R1_ADD 3 -1" --html outputs/work.html
+```
+
+For Kirby diagrams add `--framings` (e.g. `--framings 5 2`, or `--framings dot -2` for a dotted circle)
+to every run, and list or apply Kirby moves the same way (`--list HANDLE_SLIDE`,
+`--move "HANDLE_SLIDE 14 26"`); `--verify` checks each step.
+
+**Python script.** The diagram stays in memory, so there is nothing to re-run:
+
+```python
+import html
+import os
+
+from knotml import Move, MoveKind
+from knotml.interop import from_knotinfo
+from knotml.visualization import to_svg
+
+
+def show(d, kind, path="outputs/work.html"):
+    """Write the diagram, its PD code and the legal moves of one kind to an HTML page."""
+    moves = "\n".join(repr(m) for m in d.legal_moves([kind]))
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w") as f:
+        f.write(f"<html><body>{to_svg(d, size=520, labels=True)}"
+                f"<pre>PD: {d.to_pd()}\n\nlegal {kind.name} moves:\n{html.escape(moves)}</pre></body></html>")
+
+
+d = from_knotinfo("L4a1{0}")                    # 1. pick a link
+show(d, MoveKind.R2_ADD)                        # 2. open outputs/work.html: drawing + R2_ADD options
+d.apply_inplace(Move(MoveKind.R2_ADD, 0, 14))   # 3. pick one
+show(d, MoveKind.R1_ADD)                        # 4. refresh the page; it now lists R1_ADD options
+d.apply_inplace(Move(MoveKind.R1_ADD, 3, sign=-1))
+show(d, MoveKind.R3)                            # ... and repeat
+```
+
+Run it with `python step_by_step.py`, or paste it into `ipython` and keep going interactively. For
+Kirby diagrams use `FramedLink`/`Handlebody` (section 8): draw `F.diagram`, pass
+`dotted=H.dotted_labels()` to `to_svg`, list `F.legal_moves([KirbyKind.HANDLE_SLIDE])`, and apply
+`KirbyMove(KirbyKind.HANDLE_SLIDE, a=..., b=...)`. A move's undo is returned by `apply_inplace`, or
+keep `d.copy()` before experimenting.
+
+### 5. Random walks
 
 `--random N` applies `N` random Reidemeister moves (chosen uniformly among all legal moves)
 before printing; `--seed` picks the walk and `--trace` prints every move and the PD code after
@@ -95,7 +152,7 @@ fixed along a walk; the writhe does not (R1 moves change it).
 Uniform sampling is dominated by crossing-increasing moves (R1/R2 additions make up ~95% of
 legal moves on a large diagram), so walks mostly grow and rarely pick R3.
 
-### 5. Visualize
+### 6. Visualize
 
 Drawings use spherogram's orthogonal layout (needs the `oracles` extra):
 
@@ -122,7 +179,7 @@ open("trefoil.svg", "w").write(svg)
 view(from_knotinfo("3_1"))                                        # PLink window
 ```
 
-### 6. Use the library
+### 7. Use the library
 
 ```python
 import random
@@ -178,7 +235,7 @@ anchored at ports:
 Legality checks are O(1), `apply_inplace` is O(1). See `planning/core-design.md` for the
 details and measured timings.
 
-### 7. Kirby calculus
+### 8. Kirby calculus
 
 There are two setups, sharing the handle-slide construction:
 
@@ -192,7 +249,7 @@ There are two setups, sharing the handle-slide construction:
 Framings are framing coefficients (linking number with the framing push-off), not blackboard
 framings, so Reidemeister moves never change them; both setups also allow every Reidemeister move.
 
-#### 7a. 3-manifolds: `FramedLink`
+#### 8a. 3-manifolds: `FramedLink`
 
 ```python
 from knotml import FramedLink, KirbyKind, KirbyMove
@@ -260,7 +317,7 @@ surgeries; on very large diagrams SnapPy may fail to find the hyperbolic structu
 colour, and captions show the framings and H₁. See `planning/kirby-design.md` for the
 construction and verification.
 
-#### 7b. 4-manifolds: `Handlebody`
+#### 8b. 4-manifolds: `Handlebody`
 
 Components are dotted circles (`None`), which must form an unlink, or framed 2-handles. There are
 no blow-ups; instead 1/2-handle pairs (and, with `closed=True`, 2/3-handle pairs) are created and
@@ -317,7 +374,7 @@ python scripts/inspect_diagram.py --knotinfo "L7a6{0}" --framings dot -2 --rando
 
 Move arguments add `CANCEL_12 dotted`, `CREATE_12 framing`, `CANCEL_23 label`, `CREATE_23`.
 
-### 8. Benchmark
+### 9. Benchmark
 
 ```bash
 python scripts/inspect_diagram.py --knotinfo 3_1 --random 100 --bench
