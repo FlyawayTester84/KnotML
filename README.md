@@ -24,13 +24,14 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 - `dev` adds pytest. `oracles` adds SnapPy/spherogram, Regina, knot Floer homology and the
   KnotInfo database; it is needed for the cross-checks, certified unknot test, loading knots
   by name, and drawing. The core works without it (`-e ".[dev]"`).
+- `rl` adds PyTorch and PyYAML for training agents (section 10): `-e ".[dev,oracles,rl]"`.
 - Without activating, prefix commands with `venv/bin/`, e.g. `venv/bin/python -m pytest`.
   `deactivate` leaves the venv.
 
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 110 passed, 1 skipped
+python -m pytest                            # whole suite: 120 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -465,10 +466,70 @@ The page has the following parts:
 - **History** of the episode.
 
 Illegal moves and raw actions count as steps, as they would for an agent. `--reward` takes `zero`
-(the default), `example` (an illustrative shaping, `knotml.play.example_reward`) or
-`module:function` for your own.
+(the default), `sparse`, `potential` (the training default, section 10), `my_reward` (yours, in
+`src/knotml/envs/my_rewards.py`), `example` (an illustrative shaping) or `module:function`; see
+`knotml/envs/rewards.py`.
 
-### 10. Benchmark
+### 10. Train an agent
+
+`scripts/train_agent.py` trains a policy to reduce Kirby diagrams to the empty diagram with PPO.
+All hyperparameters are in `configs/ppo.yaml`: environment, reward, curriculum, evaluation,
+network and algorithm. The design is in `planning/rl-design.md`.
+
+```bash
+python -m uv pip install --python venv/bin/python -e ".[rl]"      # PyTorch + PyYAML (add tensorboard if wanted)
+python scripts/train_agent.py                                     # configs/ppo.yaml; GPU if CUDA is available
+python scripts/train_agent.py --set run.device=cuda env.num_envs=32 algorithm.learning_rate=1e-4
+python scripts/train_agent.py --resume runs/kirby-ppo/checkpoints/latest.pt --set run.total_timesteps=5000000
+python scripts/evaluate_agent.py runs/kirby-ppo/checkpoints/best.pt --scramble 1 8 --episodes 200
+python scripts/evaluate_agent.py runs/kirby-ppo/checkpoints/best.pt --html outputs/agent.html --record 3
+```
+
+On a CUDA machine, install the PyTorch build for your CUDA version (see pytorch.org) before the
+`rl` extra. `--set section.key=value` overrides any entry of the YAML; unknown keys are errors.
+
+**Setup.**
+
+- **Starts:** random construction moves applied to the empty diagram (a scramble), so every
+  start is solvable.
+- **Curriculum:** begins at 1–3 construction moves and raises the maximum when 80% of recent
+  episodes succeed.
+- **Actions:** the policy scores the current legal moves (`CandidateActions`), so it never takes
+  an illegal one.
+- **Reward (default `potential`):** +1 for the empty diagram and −0.01 per step, plus
+  potential-based shaping that favours fewer components and crossings. This shaping does not
+  change the optimal policy. Set the `reward` section to `sparse`, `zero` or `my_reward`.
+- **Your own reward:** edit `my_reward` in `src/knotml/envs/my_rewards.py` (it returns 0 until you
+  fill it in; its docstring lists what a step's transition holds). Then train with
+  `--set reward.name=my_reward`, or set `name: my_reward` in the YAML. Entries under
+  `reward.kwargs` are passed to it as keyword arguments, so constants can be tuned from the
+  config. A function in any other module also works as `module:function`.
+
+**Swappable parts.**
+
+- **Network** (`policy: gnn`): message passing over the diagram's ports, faces and components,
+  and does not depend on crossing numbering.
+- **Algorithm** (`algorithm: ppo`): implemented behind an `Algorithm` interface. A new one
+  subclasses it, registers with `@register_algorithm("name")`, and is selected in the YAML.
+
+**Output.** A run writes `runs/<name>/`, which git ignores:
+
+- `config.yaml`, `metrics.csv` and `eval.csv`;
+- TensorBoard events, if TensorBoard is installed;
+- `checkpoints/`: `latest.pt`, `best.pt` and the last 3 periodic checkpoints. `best.pt` has the
+  best evaluation: the hardest scramble level reached, then the success rate there.
+
+`evaluate_agent.py` reports the greedy success rate on fresh scrambles; `--stochastic` samples
+actions instead. Every env runs the same number of episodes, so the count is rounded up to a
+multiple of the env count (100 requested gives 112). With `--html` it writes the agent's episodes
+as step-through pages; each page's first frame lists the scramble that built the start.
+
+As a sanity check, a small network (8 envs, hidden 64) trained for 60k steps (about 6 minutes on a
+laptop CPU) solves 97.6% of fresh scrambles of 1–12 moves and 85.7% of 12-move scrambles. That
+model is saved in `models/ppo-small-cpu/`: weights, `config.yaml`, training curves and a README
+with commands to evaluate, retrain or resume it. Details are in `planning/rl-design.md`.
+
+### 11. Benchmark
 
 ```bash
 python scripts/inspect_diagram.py --knotinfo 3_1 --random 100 --bench
@@ -497,6 +558,10 @@ src/knotml/
     svg.py         spherogram layout, SVG export, component styles, PLink viewer
     pages.py       HTML pages: the step-through page and shared page styles
   envs/          Gymnasium environments: KirbyEnv (reduce a Kirby diagram to empty), UnknotEnv (stub)
+    rewards.py     reward registry: zero, sparse, potential, my_reward, example, module:function
+    my_rewards.py  my_reward: the reward function to edit
+  rl/            training agents (PyTorch): config, vector envs, gnn policy, PPO, curriculum, trainer
+    algorithms/    Algorithm interface + registry; ppo.py
   play/          playing KirbyEnv by hand
     session.py     an episode with undo, previews and a record
     console.py     terminal commands and the play_env.py program
@@ -505,9 +570,14 @@ src/knotml/
 scripts/
   inspect_diagram.py  load, random-walk, trace, visualize and benchmark a diagram
   play_env.py         play the Kirby environment in the terminal, watching it on an HTML page
+  train_agent.py      train an agent (configs/ppo.yaml)
+  evaluate_agent.py   success rate of a checkpoint; agent episodes as HTML
+configs/         training hyperparameters (YAML)
+models/          trained agents kept with the project: weights, config, curves (ppo-small-cpu/)
 tests/           pytest suite (cross-checked against Regina when installed)
 planning/        research and design notes
 outputs/         generated traces and drawings (gitignored)
+runs/            training runs: logs and checkpoints (gitignored)
 ```
 
 ## Goals
@@ -520,8 +590,8 @@ outputs/         generated traces and drawings (gitignored)
 Also refer to ``description.md``. 
 1. ~~Determine what knot representation to use~~ (PD codes; see `planning/core-design.md`)
 2. ~~Implement Reidemeister moves~~ (`knotml/core/moves.py`)
-3. ~~RL environment for Kirby diagrams~~ (`knotml/envs/kirby_env.py`; reward still open);
-   `UnknotEnv` (unknotting) still awaits the same treatment
+3. ~~RL environment for Kirby diagrams~~ (`knotml/envs/kirby_env.py`) and ~~a PPO agent~~
+   (`knotml/rl/`, `configs/ppo.yaml`); `UnknotEnv` (unknotting) still awaits the same treatment
 4. ~~Basic visualization~~ (`knotml/visualization/`); layouts that stay continuous across moves
 5. ~~Kirby calculus~~: 3-manifolds (`knotml/kirby.py`) and 4-manifolds with dotted circles and
    handle cancellations (`knotml/handlebody.py`)

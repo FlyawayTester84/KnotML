@@ -155,7 +155,8 @@ def main() -> int:
             print(f"verify step {steps}: {'ok' if ok else 'inconclusive' if ok is None else 'FAILED'} ({status})")
         if args.html:
             new = set(range(history[-1][1].n_crossings, d.n_crossings))
-            history.append((repr(move), d.copy(), touched | new, components(), status))
+            note = f"verified: {status}" if status else ""
+            history.append((repr(move), d.copy(), touched | new, components(), note))
 
     for spec in args.move:
         try:

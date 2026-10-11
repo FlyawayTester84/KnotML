@@ -23,3 +23,4 @@ venv/
 
 # Generated drawings and traces
 outputs/
+runs/

@@ -97,14 +97,15 @@ def invariants_html(diagram: LinkDiagram, comps=None, calculus: Optional[str] = 
 
 
 def steps_page(history: Sequence[tuple], calculus: Optional[str] = None) -> str:
-    """A page stepping through ``history``: ``(label, diagram, highlighted crossings, components, status)``
-    per step, ``components`` being ``{label: framing or None}`` (``None`` for a plain diagram)."""
+    """A page stepping through ``history``: ``(label, diagram, highlighted crossings, components, note)``
+    per step, ``components`` being ``{label: framing or None}`` (``None`` for a plain diagram) and
+    ``note`` a line of small print under the caption (may be empty)."""
     frames = []
     for step, (label, diagram, marked, comps, status) in enumerate(history):
         caption = f"step {step}: {html.escape(label)} &rarr; {diagram.n_crossings} crossings"
         caption += (", " if comps is None else "<br>") + invariants_html(diagram, comps, calculus)
         if status:
-            caption += f"<br><small>verified: {html.escape(status)}</small>"
+            caption += f"<br><small>{html.escape(status)}</small>"
         dotted, notes = component_notes(comps)
         svg = to_svg(diagram, size=520, labels=True, highlight=marked, dotted=dotted, notes=notes, style=False)
         frames.append(

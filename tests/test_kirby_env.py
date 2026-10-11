@@ -137,3 +137,18 @@ def test_candidate_wrapper():
     obs, _, _, _, info = small.step(empty_slot)
     assert not info["legal"] and small.unwrapped.kirby.canonical_key() == key
     assert small.observation_space.contains(obs)
+
+
+def test_my_reward_is_registered():
+    import pickle
+
+    from knotml.envs import make_reward
+    from knotml.envs.my_rewards import my_reward
+
+    assert make_reward("my_reward") is my_reward
+    bound = make_reward("my_reward", bonus=2.0)  # config kwargs are passed on every call
+    assert bound.func is my_reward and bound.keywords == {"bonus": 2.0}
+    assert pickle.loads(pickle.dumps(bound)).keywords == {"bonus": 2.0}  # usable in subprocess envs
+    env = KirbyEnv(reward_fn=bound)
+    env.reset(seed=0)
+    assert isinstance(env.step(env.legal_actions()[0])[1], float)

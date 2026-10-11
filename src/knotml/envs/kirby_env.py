@@ -257,6 +257,20 @@ class KirbyEnv(gym.Env):
         """Every legal move within the capacity, each once: O(n + output)."""
         return [m for m in self._obj.iter_legal_moves(self.kinds) if self._fits(m)]
 
+    def action_fields(self) -> np.ndarray:
+        """Which fields each kind reads, shape ``(len(kinds), 3)``: anchor ``a``, anchor ``b``, ``param``."""
+        out = np.zeros((len(self.kinds), 3), dtype=bool)
+        for i, kind in enumerate(self.kinds):
+            if kind in (MoveKind.R2_ADD, KirbyKind.HANDLE_SLIDE):
+                out[i] = (True, True, False)
+            elif kind == MoveKind.R1_ADD:
+                out[i] = (True, False, True)
+            elif kind in (KirbyKind.BLOW_UP, KirbyKind.CREATE_12):
+                out[i] = (False, False, True)
+            elif kind != KirbyKind.CREATE_23:
+                out[i] = (True, False, False)
+        return out
+
     def legal_actions(self) -> np.ndarray:
         """Canonical action vectors of :meth:`legal_moves`, shape ``(L, 4)``."""
         moves = self.legal_moves()

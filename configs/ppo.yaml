@@ -1,0 +1,81 @@
+# Train an agent to reduce Kirby diagrams to the empty diagram with PPO.
+#
+#   python scripts/train_agent.py --config configs/ppo.yaml
+#   python scripts/train_agent.py --config configs/ppo.yaml --set run.device=cuda env.num_envs=32
+#
+# Every key can be overridden with --set section.key=value (values are YAML: 1e-4, [1, 3], true).
+# Unknown keys are errors. The run's full config is saved to runs/<name>/config.yaml.
+
+run:
+  name: kirby-ppo
+  seed: 0
+  device: auto              # auto (CUDA if available, else CPU) | cuda | cuda:1 | mps | cpu
+  output_dir: runs          # the run lives in runs/<name>/ (a suffix is added if it exists)
+  total_timesteps: 2000000  # environment steps, summed over all envs
+  log_every: 1              # iterations between metrics rows
+  checkpoint_every: 50      # iterations between step_<n>.pt checkpoints (latest.pt is always kept)
+  keep_checkpoints: 3       # step_<n>.pt files to keep
+  tensorboard: true         # also write TensorBoard events if tensorboard is installed
+  torch_threads: 0          # CPU threads for PyTorch (0: default)
+  tf32: true                # TensorFloat-32 matmuls on Ampere or newer GPUs
+  compile: false            # torch.compile the policy (CUDA; first iterations are slower)
+
+env:
+  calculus: 4-manifold      # 4-manifold (Handlebody: slides, 1/2 pairs) | 3-manifold (FramedLink: blow-ups)
+  closed: false             # 4-manifold only: allow 2/3-handle pairs
+  max_crossings: 32         # capacity: moves that would exceed it are illegal (masked out)
+  max_components: 6
+  max_steps: 40             # episode length before truncation
+  max_actions: 512          # candidate legal moves shown to the policy per state (the rest are subsampled)
+  num_envs: 16
+  vectorization: async      # async (one process per env) | sync (one process)
+  scramble: [1, 3]          # construction moves building each start; the curriculum raises the maximum
+
+reward:                     # zero | sparse | potential | my_reward | example | module:function
+  name: potential           # my_reward: your function in src/knotml/envs/my_rewards.py (its kwargs go below)
+  kwargs:                   # potential = sparse + gamma * phi(after) - phi(before), phi = -(wc * components + wx * crossings)
+    solved: 1.0             # reaching the empty diagram
+    step: -0.01             # every other legal step
+    illegal: -0.1           # an action that changes nothing (cannot happen with masking)
+    component_weight: 0.1   # wc
+    crossing_weight: 0.01   # wx
+                            # gamma defaults to algorithm.gamma
+
+curriculum:
+  enabled: true
+  window: 200               # episodes (all started at the current level) in the success rate
+  promote_at: 0.8           # success rate that raises the scramble maximum by `step`
+  step: 1
+  max_scramble: 12
+
+eval:
+  every: 25                 # iterations (0: never)
+  episodes: 64
+  num_envs: 8
+  deterministic: true       # greedy actions
+  scramble: null            # null: the current training range; or e.g. [1, 6]
+
+policy:
+  name: gnn                 # message passing over ports, faces and components (knotml.rl.policies)
+  hidden: 128
+  layers: 4
+  framing_clip: 8           # framings beyond +-8 share an embedding (their size still enters a scalar feature)
+
+algorithm:
+  name: ppo                 # knotml.rl.algorithms registry
+  learning_rate: 3.0e-4
+  anneal_lr: true           # linear decay to 0 over total_timesteps
+  num_steps: 128            # rollout length per env; batch = num_steps * num_envs
+  gamma: 0.99
+  gae_lambda: 0.95
+  num_minibatches: 8
+  update_epochs: 4
+  norm_adv: true
+  clip_coef: 0.2
+  clip_vloss: true
+  ent_coef: 0.01
+  vf_coef: 0.5
+  max_grad_norm: 0.5
+  target_kl: 0.03           # stop an update early above this approximate KL (null: never)
+  adam_eps: 1.0e-5
+  weight_decay: 0.0

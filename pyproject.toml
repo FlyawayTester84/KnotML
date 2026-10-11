@@ -27,6 +27,11 @@ oracles = [
   "knot_floer_homology",
   "database_knotinfo",
 ]
+# Training agents (knotml.rl, scripts/train_agent.py). Add tensorboard for TensorBoard logs.
+rl = [
+  "torch>=2.2",
+  "pyyaml>=6.0",
+]
 dev = [
   "pytest",
 ]

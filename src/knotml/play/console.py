@@ -267,7 +267,8 @@ def main(argv=None) -> int:
     parser.add_argument("--max-components", type=int, default=8, help="environment capacity (default 8)")
     parser.add_argument("--max-steps", type=int, default=200, help="truncation (default 200)")
     parser.add_argument("--reward", default="zero",
-                        help="zero (default), example (an illustrative shaping), or module:function")
+                        help="zero (default), sparse, potential, my_reward (src/knotml/envs/my_rewards.py), "
+                        "example, or module:function (knotml.envs.rewards)")
     parser.add_argument("--html", default="outputs/play.html", help="the page (default outputs/play.html)")
     parser.add_argument("--no-html", action="store_true", help="terminal only")
     parser.add_argument("--no-open", action="store_true", help="do not open the page in the browser")

@@ -2,16 +2,14 @@
 
 from __future__ import annotations
 
-import importlib
-import os
 import random
-import sys
 from dataclasses import dataclass, field
 from typing import Callable, Optional, Sequence
 
 import numpy as np
 
-from ..envs.kirby_env import Kirby, KirbyEnv, Transition, zero_reward
+from ..envs.kirby_env import Kirby, KirbyEnv, Transition
+from ..envs.rewards import example_reward, make_reward
 from ..handlebody import Handlebody
 from ..kirby import AnyMove
 from ..notation import move_spec, touched_crossings
@@ -169,31 +167,7 @@ class PlaySession:
         return frames
 
 
-def example_reward(t: Transition) -> float:
-    """An illustrative shaping for trying the console, not a recommendation.
-
-    -1 for an illegal action, +10 for reaching the empty diagram, otherwise
-    0.5 per component removed and 0.05 per crossing removed (negative when
-    added), minus 0.01 per step.
-    """
-    if not t.legal:
-        return -1.0
-    if t.terminated:
-        return 10.0
-    d_components = len(t.before.labels()) - len(t.after.labels())
-    d_crossings = t.before.diagram.n_crossings - t.after.diagram.n_crossings
-    return 0.5 * d_components + 0.05 * d_crossings - 0.01
-
-
 def load_reward(name: str) -> Callable[[Transition], float]:
-    """``zero``, ``example`` or ``module:function`` (the current directory is importable)."""
-    if name == "zero":
-        return zero_reward
-    if name == "example":
-        return example_reward
-    module, sep, attr = name.partition(":")
-    if not sep:
-        raise ValueError(f"reward {name!r}: use zero, example or module:function")
-    if os.getcwd() not in sys.path:
-        sys.path.insert(0, os.getcwd())
-    return getattr(importlib.import_module(module), attr)
+    """A reward by name: ``zero``, ``sparse``, ``potential``, ``example`` or ``module:function``
+    (see :mod:`knotml.envs.rewards`)."""
+    return make_reward(name)
