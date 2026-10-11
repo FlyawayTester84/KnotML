@@ -75,7 +75,7 @@ def test_capacity_is_raised_for_larger_diagrams():
 
 def test_command_line(tmp_path, capsys):
     pd = str(LINKS["L2a1{1}"][0])
-    common = ["--models", str(MODELS), "--no-html"]
+    common = ["--models", str(MODELS), "--agent", AGENT, "--no-html"]
     assert solve_main(["--pd", pd, "--framings", "dot", "5", *common]) == 0
     out = capsys.readouterr().out
     assert "solved in 1 move" in out and "--move 'CANCEL_12 0'" in out and "--verify" in out
@@ -86,5 +86,9 @@ def test_command_line(tmp_path, capsys):
     with pytest.raises(SystemExit):
         solve_main(["--pd", pd, *common])  # no --framings
     with pytest.raises(SystemExit):
-        solve_main(["--pd", pd, "--framings", "dot", "0", "--agent", "nope", *common])
+        solve_main(["--pd", pd, "--framings", "dot", "0", *common, "--agent", "nope"])
+    if len(list_agents(MODELS)) > 1:  # several agents: --agent is required, and the error names them
+        with pytest.raises(SystemExit):
+            solve_main(["--pd", pd, "--framings", "dot", "0", "--models", str(MODELS), "--no-html"])
+        assert AGENT in capsys.readouterr().err
     assert KirbyMove(KirbyKind.CANCEL_12, a=0) == parse_move("CANCEL_12 0")

@@ -54,6 +54,21 @@ The raw action space is `MultiDiscrete([kinds, anchors, anchors, 3])`.
   subsampled.
 - **Typical counts:** about 60–300 legal moves for 4-manifold diagrams of 5–15 crossings.
 
+**Factorisation** (`policy.factorization`).
+
+- **`flat`:** one softmax over the candidate scores. At initialisation the scores are near 0, so a
+  kind's share is its share of the candidates. In a typical state that is 54% R2_ADD and 38%
+  HANDLE_SLIDE, against 0.2% CANCEL_12.
+- **`kind`:** a kind head scores each kind from its embedding and the global summary. The
+  distribution is `KindFirst`: P(kind) over the kinds present × P(move | kind) from the candidate
+  scores normalised within the kind.
+  - **Sampling** a slot from it equals sampling a kind, then a move.
+  - **Log-probabilities** are exact, so PPO's ratios and KL are unchanged.
+  - **Greedy action:** the single most probable move.
+- **Kind-balanced entropy bonus:** `H(kind) + Σ_k P(k) · H(move | k) / log n_k` (1 for a one-move
+  kind). The joint entropy is maximised by spreading over moves, which would undo the balancing.
+  This version is maximised by uniform kinds with uniform moves inside each.
+
 ## Network (`gnn`)
 
 **Nodes.**
@@ -129,6 +144,29 @@ undone by removing the kinks and cancelling the pairs directly.
 
 Throughput is 150–330 env steps/s on CPU, dominated by listing and encoding candidates in Python.
 On MPS the default network ran at ~50 steps/s, so `device: auto` picks CUDA or the CPU, never MPS.
+
+### Flat versus kind-first
+
+The same settings as `models/ppo-small-cpu` (60k steps, hidden 64, 3 layers, seed 0), changing only
+`policy.factorization`:
+
+| | `flat` | `kind` |
+|---|---|---|
+| Training steps to reach scramble max 4 / 8 / 12 | 12.8k / 20.0k / 24.1k | 3.6k / 6.7k / 10.8k |
+| Greedy success at 5k steps (32 episodes) | 0.13 (scrambles 1–3) | 1.00 (scrambles 1–6) |
+| Final, scrambles 1–12 (208 episodes) | 97.6%, 4.8 steps | 96.2%, 5.0 steps |
+| Final, exactly 12 moves (208 episodes) | 86.5%, 7.0 steps | 89.9%, 8.1 steps |
+
+- **Speed:** kind-first climbs the curriculum 2–3.5× faster. At initialisation it gives the rare
+  simplifying kinds (CANCEL_12, R1_REMOVE, R2_REMOVE) as much probability as the hundreds of R2_ADD
+  and slide moves, so solving episodes appear almost immediately.
+- **Final quality:** at 60k steps the two agents are within sampling noise of each other (±2–3
+  points at 208 episodes). The gain is in sample efficiency, which should matter more for harder
+  start distributions.
+- **Saved agents:** the kind-first agent is `models/ppo-small-cpu-kind/`. Its `best.pt`, from step
+  15,360, already scores 95.7% / 88.5% (1–12 / exactly 12), level with the final weights.
+  `configs/ppo.yaml` now uses `kind`. The network's built-in default stays `flat`, so checkpoints
+  saved before the option existed still load.
 
 ## Next
 

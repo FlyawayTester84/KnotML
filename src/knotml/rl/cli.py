@@ -153,7 +153,8 @@ def solve_main(argv: Optional[Sequence[str]] = None) -> int:
             closed = " (closed)" if a["closed"] else ""
             print(f"{a['name']:<20} {a['calculus']}{closed}, {a['steps']:,} training steps, "
                   f"scrambles up to {a['scramble'][1]}, capacity {a['max_crossings']} crossings / "
-                  f"{a['max_components']} components, {a['policy']} hidden {a.get('hidden')} layers {a.get('layers')}"
+                  f"{a['max_components']} components, {a['policy']} hidden {a.get('hidden')} layers {a.get('layers')} "
+                  f"{a.get('factorization', 'flat')}"
                   f"  [{a['path']}]")
         return 0
     if not (args.braid or args.pd or args.knotinfo or args.snappy):

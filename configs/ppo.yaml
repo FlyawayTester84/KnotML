@@ -60,6 +60,8 @@ policy:
   hidden: 128
   layers: 4
   framing_clip: 8           # framings beyond +-8 share an embedding (their size still enters a scalar feature)
+  factorization: kind       # kind: P(kind) * P(move | kind), with a kind-balanced entropy bonus (2-3.5x faster learning)
+                            # flat: one softmax over all legal moves (a kind's share grows with its move count)
 
 algorithm:
   name: ppo                 # knotml.rl.algorithms registry

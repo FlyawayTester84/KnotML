@@ -85,14 +85,16 @@ def _batch(cfg, seeds=(0, 1, 2)):
     return {k: np.stack([o[k] for o in obs]) for k in obs[0]}
 
 
-def test_policy_masks_and_ignores_crossing_numbering():
+@pytest.mark.parametrize("factorization", ["flat", "kind"])
+def test_policy_masks_and_ignores_crossing_numbering(factorization):
     cfg = tiny()
     spec = env_spec(cfg)
     torch.manual_seed(0)
-    policy = make_policy("gnn", spec, {"hidden": 16, "layers": 2}).double().eval()
+    policy = make_policy("gnn", spec, {"hidden": 16, "layers": 2, "factorization": factorization}).double().eval()
     batch = _batch(cfg)
     obs = obs_to_torch(batch, CPU)
-    logits, mask, value = policy(obs)
+    logits, mask, value, kind_logits = policy(obs)
+    assert (kind_logits is None) == (factorization == "flat")
     assert logits.shape == mask.shape == (3, spec.n_actions) and value.shape == (3,)
     dist, _ = policy.distribution(obs)
     assert torch.all(dist.probs[~mask] == 0)
@@ -118,9 +120,53 @@ def test_policy_masks_and_ignores_crossing_numbering():
         for row in perm["candidates"][i]:
             if row[0] >= 0:
                 row[1], row[2] = port(row[1]) if row[1] < P else row[1], port(row[2]) if row[2] < P else row[2]
-    logits2, _, value2 = policy(obs_to_torch(perm, CPU))
+    logits2, _, value2, kind_logits2 = policy(obs_to_torch(perm, CPU))
     assert torch.allclose(value, value2, atol=1e-9)
     assert torch.allclose(logits[mask], logits2[mask], atol=1e-9)
+    if kind_logits is not None:
+        assert torch.allclose(kind_logits, kind_logits2, atol=1e-9)
+
+
+def test_kind_first_distribution():
+    from knotml.rl.policies import KindFirst
+
+    torch.manual_seed(0)
+    scores, kind_logits = torch.randn(2, 7), torch.randn(2, 3)
+    mask = torch.tensor([[1, 1, 1, 1, 1, 0, 0], [1, 1, 0, 0, 0, 0, 0]], dtype=torch.bool)
+    kinds = torch.tensor([[0, 0, 0, 2, 2, 0, 0], [1, 1, 0, 0, 0, 0, 0]])
+    d = KindFirst(scores, mask, kinds, kind_logits)
+    assert torch.allclose(d.probs.sum(-1), torch.ones(2)) and torch.all(d.probs[~mask] == 0)
+    # P(move) = P(kind) * P(move | kind), with P(kind) a softmax over the kinds present
+    pk = torch.softmax(kind_logits[0, [0, 2]], 0)
+    within0, within2 = torch.softmax(scores[0, :3], 0), torch.softmax(scores[0, 3:5], 0)
+    assert torch.allclose(d.probs[0, :5], torch.cat([pk[0] * within0, pk[1] * within2]), atol=1e-6)
+    assert torch.allclose(d.kind_probs[1], torch.tensor([0.0, 1.0, 0.0]))  # only kind 1 is present
+    # balanced entropy: uniform kinds and moves give log(#kinds) + 1, whatever the kinds' sizes
+    flat = KindFirst(torch.zeros(1, 5), mask[:1, :5] | True, torch.tensor([[0, 0, 0, 0, 1]]), torch.zeros(1, 2))
+    assert flat.entropy().item() == pytest.approx(math.log(2) + 1)
+    # sampling a slot is sampling a kind, then a move of that kind
+    draws = d.sample((20000,))[:, 0]
+    freq = torch.bincount(kinds[0][draws], minlength=3).float() / len(draws)
+    assert torch.allclose(freq[[0, 2]], pk, atol=0.02)
+
+
+def test_kind_first_starts_balanced_across_kinds():
+    cfg = tiny(None, "env.max_actions=512", "env.max_crossings=32")
+    spec = env_spec(cfg)
+    obs = obs_to_torch(_batch(cfg), CPU)
+    kinds = obs["candidates"][..., 0].long()
+    for factorization in ("flat", "kind"):
+        torch.manual_seed(0)
+        policy = make_policy("gnn", spec, {"hidden": 16, "layers": 1, "factorization": factorization})
+        dist, _ = policy.distribution(obs)
+        share = torch.zeros(3, spec.n_kinds).scatter_add_(1, kinds.clamp(min=0), dist.probs.detach())
+        present = torch.zeros(3, spec.n_kinds).scatter_add_(1, kinds.clamp(min=0), obs["action_mask"].float()) > 0
+        n_present = present.sum(-1, keepdim=True)
+        if factorization == "kind":  # about 1 / (number of kinds present) each
+            assert torch.allclose(share[present], (1 / n_present).expand_as(share)[present], rtol=0.1)
+        else:  # about proportional to the number of moves of each kind
+            counts = torch.zeros(3, spec.n_kinds).scatter_add_(1, kinds.clamp(min=0), obs["action_mask"].float())
+            assert torch.allclose(share, counts / counts.sum(-1, keepdim=True), atol=0.02)
 
 
 def test_gae_matches_a_direct_computation():
@@ -161,6 +207,15 @@ def test_vector_env_autoresets_in_the_same_step():
     envs.call("set_scramble", 2, 2)
     assert all(len(s) <= 2 for s in envs.reset(seed=1)[1]["scramble"])
     envs.close()
+
+
+def test_kind_first_training_runs(tmp_path):
+    trainer = Trainer(tiny(tmp_path, "policy.factorization=kind", "run.total_timesteps=32", "eval.every=0"),
+                      quiet=True)
+    metrics = trainer.train()
+    assert trainer.global_step == 32 and math.isfinite(metrics["loss/entropy"]) and metrics["loss/entropy"] > 0
+    policy, cfg = load_policy(str(trainer.run_dir / "checkpoints" / "latest.pt"), CPU)
+    assert cfg.policy.params["factorization"] == "kind" and hasattr(policy, "kind_actor")
 
 
 def test_training_checkpoints_resume_and_evaluation(tmp_path):

@@ -48,6 +48,7 @@ policy:
   hidden: 64
   layers: 3
   framing_clip: 8
+  factorization: flat
 algorithm:
   name: ppo
   learning_rate: 0.0003

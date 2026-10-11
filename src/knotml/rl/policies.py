@@ -20,9 +20,16 @@ architectures with :func:`register_policy`.
   - a global summary.
 * **Invariance.** The network uses no crossing or face index as a feature, so
   it does not depend on how crossings are numbered.
-* **Policy head.** A candidate's logit is an MLP of its kind, the embeddings
+* **Policy head.** A candidate's score is an MLP of its kind, the embeddings
   of the anchors it reads (port or component), its parameter and the global
   summary.
+* **Factorisation** (``factorization``).
+  - ``flat`` (the default): one softmax of the scores over all candidates.
+    A kind's share starts out proportional to its number of moves.
+  - ``kind``: a kind head (an MLP of the kind's embedding and the global
+    summary) gives P(kind) over the kinds present, and the scores are
+    normalised within each kind, giving P(move | kind).  See
+    :class:`KindFirst`.
 * **Value head.** An MLP of mean- and max-pooled port and component embeddings.
 
 All tensors are padded to the env's capacity, so a batch runs as dense gathers
@@ -34,7 +41,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, NamedTuple, Optional
 
 import torch
 from torch import nn
@@ -42,7 +49,7 @@ from torch.distributions import Categorical
 
 from .envs import EnvSpec
 
-__all__ = ["Policy", "GraphPolicy", "POLICIES", "register_policy", "make_policy"]
+__all__ = ["Policy", "GraphPolicy", "Heads", "KindFirst", "POLICIES", "register_policy", "make_policy"]
 
 POLICIES: dict[str, type] = {}
 
@@ -66,24 +73,91 @@ def make_policy(name: str, spec: EnvSpec, params: dict) -> Policy:
     return cls(spec, hp)
 
 
+class Heads(NamedTuple):
+    """What a policy's ``forward`` returns."""
+
+    logits: torch.Tensor  # (B, A) a score per candidate slot
+    mask: torch.Tensor  # (B, A) bool: which slots hold a legal move
+    value: torch.Tensor  # (B,)
+    kind_logits: Optional[torch.Tensor] = None  # (B, K): set for a kind-first policy
+
+
+class KindFirst(Categorical):
+    """A distribution over the candidate slots of the form P(kind) · P(move | kind).
+
+    * ``scores`` are normalised within each kind, giving log P(move | kind).
+    * ``kind_logits`` are normalised over the kinds that have a legal move,
+      giving log P(kind).
+    * As a ``Categorical`` over slots, sampling from it is the same as drawing a
+      kind, then a move of that kind.  ``log_prob`` and ``probs`` are exact, so
+      PPO's ratios and KL need nothing special.
+
+    :meth:`entropy` is the kind-balanced entropy that PPO's bonus uses:
+
+        H(kind) + Σ_k P(k) · H(move | k) / log n_k   (a kind with a single move counts 1)
+
+    It is largest for uniform kinds with uniform moves inside each, whatever
+    the kinds' sizes.  The joint entropy would be largest for uniform moves,
+    which pushes probability back to the kinds with many moves.
+    """
+
+    def __init__(self, scores: torch.Tensor, mask: torch.Tensor, kinds: torch.Tensor,
+                 kind_logits: torch.Tensor) -> None:
+        B, K = kind_logits.shape
+        neg = torch.finfo(scores.dtype).min
+        bins = torch.where(mask, kinds, K)  # padding goes to a spare bin K
+        ones = mask.to(scores.dtype)
+        counts = scores.new_zeros(B, K + 1).scatter_add_(1, bins, ones)[:, :K]
+        present = counts > 0
+        masked = scores.masked_fill(~mask, neg)
+        peak = scores.new_full((B, K + 1), neg).scatter_reduce(1, bins, masked, "amax")
+        total = scores.new_zeros(B, K + 1).scatter_add_(1, bins, (masked - peak.gather(1, bins)).exp() * ones)
+        lse = peak + total.clamp_min(torch.finfo(scores.dtype).tiny).log()
+        within = (masked - lse.gather(1, bins)).masked_fill(~mask, 0.0)  # log P(move | kind)
+        kind_logp = kind_logits.masked_fill(~present, neg).log_softmax(-1).masked_fill(~present, 0.0)
+        joint = (within + torch.cat([kind_logp, kind_logp.new_zeros(B, 1)], 1).gather(1, bins)).masked_fill(~mask, neg)
+        super().__init__(logits=joint)
+        self._kind_logp, self._present, self._counts = kind_logp, present, counts
+        self._within, self._bins, self._mask = within, bins, mask
+
+    @property
+    def kind_probs(self) -> torch.Tensor:
+        """P(kind), shape (B, K); 0 for kinds without a legal move."""
+        return self._kind_logp.exp() * self._present
+
+    def entropy(self) -> torch.Tensor:
+        pk = self.kind_probs
+        h_kind = -(pk * self._kind_logp).sum(-1)
+        p_within = self._within.exp() * self._mask
+        h = self._within.new_zeros(self._within.shape[0], pk.shape[1] + 1)
+        h_within = h.scatter_add_(1, self._bins, -p_within * self._within)[:, :-1]
+        n = self._counts
+        normalised = torch.where(n > 1, h_within / n.clamp(min=2).log(), torch.ones_like(h_within))
+        return h_kind + (pk * normalised).sum(-1)
+
+
 class Policy(nn.Module):
-    """Base class: subclasses implement ``forward(obs) -> (logits, mask, value)`` with shapes
-    ``(B, A)``, ``(B, A)`` bool and ``(B,)``; masked entries never get probability."""
+    """Base class: subclasses implement ``forward(obs) -> Heads``.  Masked slots never get probability;
+    with ``kind_logits`` the distribution is :class:`KindFirst`, otherwise one softmax over the slots."""
 
     @dataclass
     class Hyperparameters:
         pass
 
     def distribution(self, obs: dict) -> tuple[Categorical, torch.Tensor]:
-        logits, mask, value = self(obs)
-        mask = mask.clone()
+        heads = self(obs)
+        mask = heads.mask.clone()
         empty = ~mask.any(-1)  # no legal move: fall back to slot 0, which the env treats as a no-op
         mask[empty, 0] = True
-        logits = logits.float().masked_fill(~mask, torch.finfo(torch.float32).min)
-        return Categorical(logits=logits), value
+        scores = heads.logits.float()
+        if heads.kind_logits is None:
+            return Categorical(logits=scores.masked_fill(~mask, torch.finfo(torch.float32).min)), heads.value
+        kinds = obs["candidates"][..., 0].long().clamp(min=0)
+        return KindFirst(scores, mask, kinds, heads.kind_logits.float()), heads.value
 
     def act(self, obs: dict, deterministic: bool = False):
-        """``(action, log-prob, entropy, value)`` for each observation in the batch."""
+        """``(action, log-prob, entropy, value)`` for each observation in the batch.  ``deterministic``
+        takes the single most probable move (for kind-first policies too, not the best kind's best move)."""
         dist, value = self.distribution(obs)
         action = dist.probs.argmax(-1) if deterministic else dist.sample()
         return action, dist.log_prob(action), dist.entropy(), value
@@ -94,7 +168,7 @@ class Policy(nn.Module):
         return dist.log_prob(action), dist.entropy(), value
 
     def value(self, obs: dict) -> torch.Tensor:
-        return self(obs)[2]
+        return self(obs).value
 
 
 def _mlp(sizes, out_scale: float = 1.0) -> nn.Sequential:
@@ -160,9 +234,12 @@ class GraphPolicy(Policy):
         hidden: int = 128
         layers: int = 4
         framing_clip: int = 8  # framings beyond ±clip share an embedding (their size still enters a scalar feature)
+        factorization: str = "flat"  # flat: one softmax over moves; kind: P(kind) · P(move | kind)
 
     def __init__(self, spec: EnvSpec, hp: Hyperparameters) -> None:
         super().__init__()
+        if hp.factorization not in ("flat", "kind"):
+            raise ValueError(f"policy factorization must be 'flat' or 'kind', not {hp.factorization!r}")
         self.spec, self.hp = spec, hp
         H, P = hp.hidden, spec.n_ports
         self.slot = nn.Embedding(4, H)  # position in the crossing: under-in, over, under-out, over
@@ -175,6 +252,8 @@ class GraphPolicy(Policy):
         self.kind = nn.Embedding(spec.n_kinds, H)
         self.param = nn.Embedding(3, H)
         self.actor = _mlp([5 * H, 2 * H, H, 1], out_scale=0.01)
+        if hp.factorization == "kind":  # only then, so flat checkpoints load unchanged
+            self.kind_actor = _mlp([2 * H, H, 1], out_scale=0.01)
         self.critic = _mlp([4 * H, 2 * H, H, 1], out_scale=1.0)
         ports = torch.arange(P)
         base = 4 * (ports // 4)
@@ -226,7 +305,12 @@ class GraphPolicy(Policy):
         for layer in self.layers:
             hp, hc = layer(hp, hc, g, graph)
             g = self._global(hp, hc, graph)
-        return self._logits(obs, hp, hc, g), obs["action_mask"].bool(), self._value(hp, hc, graph)
+        kind_logits = None
+        if self.hp.factorization == "kind":
+            kinds = self.kind.weight.unsqueeze(0).expand(B, -1, -1)
+            kind_logits = self.kind_actor(torch.cat([kinds, g.unsqueeze(1).expand_as(kinds)], -1)).squeeze(-1)
+        return Heads(self._logits(obs, hp, hc, g), obs["action_mask"].bool(), self._value(hp, hc, graph),
+                     kind_logits)
 
     def _pool(self, h, valid):
         mean = (h * valid).sum(1) / valid.sum(1).clamp(min=1)

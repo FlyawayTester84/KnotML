@@ -31,7 +31,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 125 passed, 1 skipped
+python -m pytest                            # whole suite: 129 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -509,6 +509,13 @@ On a CUDA machine, install the PyTorch build for your CUDA version (see pytorch.
 
 - **Network** (`policy: gnn`): message passing over the diagram's ports, faces and components,
   and does not depend on crossing numbering.
+- **How a move is sampled** (`policy.factorization`):
+  - `kind` (the default in `configs/ppo.yaml`): draws a kind first, then a move of that kind.
+    Kinds start equally likely, and the entropy bonus is balanced across kinds. It climbed the
+    curriculum 2–3.5× faster than `flat` in our comparison;
+  - `flat`: one softmax over all legal moves, so a kind's initial share grows with its number of
+    moves (hundreds of R2_ADD moves versus one cancellation). It is the network's built-in default,
+    so checkpoints saved before the option existed load unchanged.
 - **Algorithm** (`algorithm: ppo`): implemented behind an `Algorithm` interface. A new one
   subclasses it, registers with `@register_algorithm("name")`, and is selected in the YAML.
 
@@ -524,10 +531,16 @@ actions instead. Every env runs the same number of episodes, so the count is rou
 multiple of the env count (100 requested gives 112). With `--html` it writes the agent's episodes
 as step-through pages; each page's first frame lists the scramble that built the start.
 
-As a sanity check, a small network (8 envs, hidden 64) trained for 60k steps (about 6 minutes on a
-laptop CPU) solves 97.6% of fresh scrambles of 1–12 moves and 85.7% of 12-move scrambles. That
-model is saved in `models/ppo-small-cpu/`: weights, `config.yaml`, training curves and a README
-with commands to evaluate, retrain or resume it. Details are in `planning/rl-design.md`.
+As a sanity check, a small network (8 envs, hidden 64) was trained for 60k steps (about 6 minutes
+on a laptop CPU) with each factorisation. Both agents are saved in `models/`, each with weights,
+`config.yaml`, training curves and a README with commands to evaluate, retrain or resume it:
+
+| Agent | Sampling | Reached scrambles of 12 at | Final success, 1–12 / exactly 12 moves |
+|---|---|---|---|
+| `models/ppo-small-cpu-kind/` | kind-first | 10.8k steps | 96.2% / 89.9% |
+| `models/ppo-small-cpu/` | flat | 24.1k steps | 97.6% / 86.5% |
+
+Details are in `planning/rl-design.md`.
 
 #### Test an agent on your own link
 
@@ -537,8 +550,8 @@ with commands to evaluate, retrain or resume it. Details are in `planning/rl-des
 ```bash
 python scripts/solve_link.py --list-agents                                    # what is in models/
 python scripts/solve_link.py --knotinfo "L2a1{1}" --framings dot 3 --agent ppo-small-cpu --max-steps 20
-python scripts/solve_link.py --pd "[[4,1,3,2],[2,3,1,4]]" --framings dot 0 --open      # any PD code
-python scripts/solve_link.py --knotinfo "L7a6{0}" --framings dot -2 --attempts 10      # greedy + 9 sampled
+python scripts/solve_link.py --agent ppo-small-cpu-kind --pd "[[4,1,3,2],[2,3,1,4]]" --framings dot 0 --open
+python scripts/solve_link.py --agent ppo-small-cpu-kind --knotinfo "L7a6{0}" --framings dot -2 --attempts 10
 ```
 
 It prints:
@@ -558,7 +571,8 @@ The best attempt is written as a step-through page, `outputs/solve.html` by defa
 `--no-html`). The exit status is 0 when solved and 1 when not.
 
 - **Agent choice:** `--agent` takes a folder name under `models/` or a checkpoint path (`--checkpoint
-  best|latest`). It can be omitted when `models/` holds a single agent.
+  best|latest`). It can be omitted only when `models/` holds a single agent; with several, the
+  error lists them.
 - **Calculus:** the agent's calculus decides the kind of diagram. A 4-manifold agent reads integer
   framings as 2-handles; a 3-manifold agent does not accept dots.
 - **Capacity:** the network's weights do not depend on the environment's capacity, so a diagram
@@ -571,7 +585,7 @@ In Python:
 from knotml.rl.solve import Agent, solve
 from knotml.interop import from_knotinfo
 
-agent = Agent.load("ppo-small-cpu")                         # models/ppo-small-cpu/checkpoints/best.pt
+agent = Agent.load("ppo-small-cpu-kind")                    # models/ppo-small-cpu-kind/checkpoints/best.pt
 start = agent.start_from(from_knotinfo("L2a1{1}"), [None, 3])
 attempt = solve(agent, start, max_steps=20)[0]
 print(attempt.solved, [step.spec for step in attempt.steps])
@@ -623,7 +637,8 @@ scripts/
   evaluate_agent.py   success rate of a checkpoint; agent episodes as HTML
   solve_link.py       run a trained agent on a given link (step limit, moves, replay command, HTML)
 configs/         training hyperparameters (YAML)
-models/          trained agents kept with the project: weights, config, curves (ppo-small-cpu/)
+models/          trained agents kept with the project: weights, config, curves
+                 (ppo-small-cpu-kind/: kind-first; ppo-small-cpu/: flat)
 tests/           pytest suite (cross-checked against Regina when installed)
 planning/        research and design notes
 outputs/         generated traces and drawings (gitignored)
