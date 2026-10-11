@@ -430,54 +430,69 @@ def _format_components(comps) -> str:
     return "{" + ", ".join(f"K{lab}: {'dot' if f is None else f'{f:+d}'}" for lab, f in comps.items()) + "}"
 
 
+def _signed(n: int) -> str:
+    return f"{n:+d}".replace("-", "\N{MINUS SIGN}")
+
+
+_PAGE_TOKENS = {
+    "light": "--page:#f9f9f7;--ink:#0b0b0b;--ink-2:#52514e;--border:rgba(11,11,11,0.10);color-scheme:light",
+    "dark": "--page:#0d0d0d;--ink:#f0efec;--ink-2:#c3c2b7;--border:rgba(255,255,255,0.10);color-scheme:dark",
+}
+
+
 def write_html(path: str, history: list, calculus=None) -> None:
     """A self-contained page with one drawing per step, a slider and arrow-key navigation."""
-    from knotml.visualization import component_color, to_svg
+    from knotml.visualization import svg_css, to_svg
 
     frames = []
     for step, (label, diagram, marked, comps, status) in enumerate(history):
         caption = f"step {step}: {html.escape(label)} &rarr; {diagram.n_crossings} crossings"
-        dotted = []
+        dotted, notes = [], {}
         if comps is None:
             caption += f", determinant {determinant(diagram)}"
         else:
             dotted = [lab for lab, f in comps.items() if f is None]
-            chips = " ".join(
-                f'<span style="color:{component_color(lab)}">K{lab}: {"&bull;" if f is None else f"{f:+d}"}</span>'
-                for lab, f in comps.items()
-            )
+            notes = {lab: "1-handle" if f is None else f"framing {_signed(f)}" for lab, f in comps.items()}
             if calculus == "4":
                 h = Handlebody(diagram, comps)
                 caption += (
-                    f"<br>{chips} &middot; &chi; = {h.euler_characteristic()} &middot; H<sub>1</sub>(X) = {h.homology()}"
+                    f"<br>&chi; = {h.euler_characteristic()} &middot; H<sub>1</sub>(X) = {h.homology()}"
                     f" &middot; &sigma; = {h.signature()} &middot; H<sub>1</sub>(&part;X) = {h.boundary().homology()}"
                 )
             else:
-                caption += f"<br>framings {chips} &middot; H<sub>1</sub> = {FramedLink(diagram, comps).homology()}"
+                caption += f"<br>H<sub>1</sub> = {FramedLink(diagram, comps).homology()}"
         if status:
             caption += f"<br><small>verified: {html.escape(status)}</small>"
+        svg = to_svg(diagram, size=520, labels=True, highlight=marked, dotted=dotted, notes=notes, style=False)
         frames.append(
-            f'<figure class="frame" hidden><figcaption>{caption}</figcaption>'
-            f"{to_svg(diagram, size=520, labels=True, highlight=marked, dotted=dotted)}"
+            f'<figure class="frame" hidden><figcaption>{caption}</figcaption>{svg}'
             f"<details><summary>PD code</summary><code>{html.escape(str(diagram.to_pd()))}</code></details></figure>"
         )
+    light, dark = _PAGE_TOKENS["light"], _PAGE_TOKENS["dark"]
     page = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Knot move sequence</title>
 <style>
-  body {{ font-family: -apple-system, system-ui, sans-serif; margin: 24px auto; max-width: 600px; padding: 0 16px; color: #222; }}
+  :root {{ {light} }}
+  @media (prefers-color-scheme: dark) {{ :root:not([data-theme=light]) {{ {dark} }} }}
+  :root[data-theme=dark] {{ {dark} }}
+  body {{ font-family: system-ui, -apple-system, "Segoe UI", sans-serif; margin: 24px auto; max-width: 600px;
+         padding: 0 16px; background: var(--page); color: var(--ink); }}
   .controls {{ display: flex; gap: 8px; align-items: center; margin: 12px 0; }}
   input[type=range] {{ flex: 1; }}
   figure {{ margin: 0; }} figcaption {{ font-weight: 600; margin-bottom: 8px; }}
-  svg {{ width: 100%; height: auto; border: 1px solid #ddd; border-radius: 6px; }}
-  code {{ font-size: 12px; word-break: break-all; }} .hint {{ color: #777; font-size: 13px; }}
+  svg {{ width: 100%; height: auto; border: 1px solid var(--border); border-radius: 6px; }}
+  code {{ font-size: 12px; word-break: break-all; }} .hint, small, summary {{ color: var(--ink-2); }}
+  .hint {{ font-size: 13px; }}
+{svg_css()}
 </style></head><body>
 <h1>Knot move sequence</h1>
-<p class="hint">Drawn with spherogram's orthogonal layout; each component keeps its colour across steps;
-circled crossings were created or rearranged by the move.
+<p class="hint">Drawn with spherogram's orthogonal layout. Each component keeps its colour and line pattern
+across steps (legend under the drawing); circled crossings were created or rearranged by the move.
 Each step is laid out from scratch, so pictures can jump between steps. Use &larr; / &rarr; to step.</p>
-<div class="controls"><button id="prev">&larr;</button><input id="slider" type="range" min="0" max="{len(frames) - 1}" value="0">
-<button id="next">&rarr;</button></div>
+<div class="controls"><button id="prev" aria-label="Previous step">&larr;</button>
+<input id="slider" type="range" min="0" max="{len(frames) - 1}" value="0" aria-label="Step">
+<button id="next" aria-label="Next step">&rarr;</button><button id="theme">Light / dark</button></div>
 {"".join(frames)}
 <script>
   const frames = document.querySelectorAll('.frame'), slider = document.getElementById('slider');
@@ -486,6 +501,11 @@ Each step is laid out from scratch, so pictures can jump between steps. Use &lar
   document.getElementById('prev').onclick = () => show(+slider.value - 1);
   document.getElementById('next').onclick = () => show(+slider.value + 1);
   document.onkeydown = e => {{ if (e.key === 'ArrowLeft') show(+slider.value - 1); if (e.key === 'ArrowRight') show(+slider.value + 1); }};
+  document.getElementById('theme').onclick = () => {{
+    const root = document.documentElement, t = root.dataset.theme;
+    const dark = t ? t === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark ? 'light' : 'dark';
+  }};
   show(0);
 </script></body></html>
 """

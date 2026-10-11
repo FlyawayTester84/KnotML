@@ -30,7 +30,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 94 passed, 1 skipped
+python -m pytest                            # whole suite: 97 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -167,6 +167,13 @@ The HTML page has one frame per step: the move, crossing count and determinant, 
 rearranged by that move) and the PD code. Each frame is laid out from scratch, so pictures can
 jump between steps. `outputs/` is gitignored. `--view` opens SnapPy's PLink viewer (not covered
 by the automated tests).
+
+Components are styled by label, so a component looks the same at every step. Labels 0-2 get three
+hues (blue, orange, aqua) that stay distinct in every pair, including under colour-vision
+deficiency. Labels 3-11 reuse those hues with dashed, dash-dot and dotted lines. Labels from 12 on
+are drawn in grey. With two or more components, each one is tagged `K<label>` beside its strand
+and a legend sits under the drawing. Drawings follow the system's light/dark setting, and the
+page's "Light / dark" button overrides it.
 
 From Python:
 
@@ -314,8 +321,8 @@ surgeries; on very large diagrams SnapPy may fail to find the hyperbolic structu
 "inconclusive" rather than a failure). Each slide multiplies the crossing count, so
 `--max-crossings N` restricts the walk to moves that do not add crossings once it reaches `N`
 (a slide taken just below `N` can still overshoot). On the HTML page each component keeps its
-colour, and captions show the framings and H₁. See `planning/kirby-design.md` for the
-construction and verification.
+style, the legend under each drawing gives the framings, and captions show H₁. See
+`planning/kirby-design.md` for the construction and verification.
 
 #### 8b. 4-manifolds: `Handlebody`
 

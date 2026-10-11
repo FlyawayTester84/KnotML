@@ -5,7 +5,7 @@ from knotml import LinkDiagram
 
 pytest.importorskip("plink")
 pytest.importorskip("spherogram")
-from knotml.visualization import component_color, layout, to_svg  # noqa: E402
+from knotml.visualization import PATTERNS, component_color, component_style, layout, svg_css, to_svg  # noqa: E402
 
 
 def test_layout_matches_diagram():
@@ -22,7 +22,7 @@ def test_svg_colours_components_and_highlights_crossings():
     svg = to_svg(hopf, labels=True, highlight=[1])
     assert svg.startswith("<svg") and svg.endswith("</svg>")
     assert svg.count("<polygon") == 2  # one orientation arrow per component
-    assert svg.count('stroke="#f39c12"') == 1
+    assert svg.count('class="mark"') == 1
     assert "<circle" in to_svg(LinkDiagram.unknot())
 
 
@@ -32,6 +32,36 @@ def test_components_are_coloured_by_label():
     assert sorted(label for label, _ in components) == [0, 1]
     svg = to_svg(hopf)
     assert component_color(0) in svg and component_color(1) in svg
+
+
+def test_styles_are_never_cycled():
+    styles = [component_style(label) for label in range(3 * len(PATTERNS))]
+    assert len(set(styles)) == len(styles)  # labels 0-11: all different (2 and 9 used to share a colour)
+    assert {slot for slot, _ in styles} == {0, 1, 2} and styles[:3] == [(0, "solid"), (1, "solid"), (2, "solid")]
+    assert component_style(12) == component_style(99) == (None, "solid")  # past the composite styles: neutral ink
+    assert len({component_color(label, mode) for label in range(3) for mode in ("light", "dark")}) == 6
+
+
+def test_legend_tags_and_dark_mode():
+    hopf = LinkDiagram.from_pd(LINKS["L2a1{1}"][0])
+    svg = to_svg(hopf, dotted=[0], notes={0: "1-handle", 1: "framing +2"})
+    assert "K0 (1-handle)" in svg and "K1 (framing +2)" in svg
+    assert svg.count("<line") == 2 and svg.count(">K0<") == svg.count(">K1<") == 1  # legend swatches; one tag each
+    assert "<style>" in svg and component_color(0, "dark") in svg_css() and "prefers-color-scheme: dark" in svg_css()
+    assert "<style>" not in to_svg(hopf, style=False) and "<line" not in to_svg(hopf, legend=False)
+    knot = to_svg(LinkDiagram.from_pd(KNOTS["3_1"][0]))
+    assert "<line" not in knot and "K0" not in knot  # one component: no legend or tag
+
+
+def test_tags_stay_inside_the_drawing():
+    import re
+
+    chain = LinkDiagram.from_braid([g for i in range(1, 14) for g in (i, i)])  # 14 components
+    svg = to_svg(chain, size=400)
+    tag = r'<text class="t" x="([\d.]+)" y="([\d.]+)"[^>]*text-anchor="middle"'
+    tags = [(float(x), float(y)) for x, y in re.findall(tag, svg)]
+    assert len(tags) == 14 and all(0 < x < 400 and 0 < y < 400 for x, y in tags)
+    assert 'class="kx"' in svg and svg.count('stroke-dasharray=') >= 2 * 9  # neutral K12, K13; patterned K3-K11
 
 
 def test_crossingless_components_are_drawn_below_the_link():
