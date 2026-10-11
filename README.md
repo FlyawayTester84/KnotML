@@ -30,7 +30,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 76 passed, 1 skipped
+python -m pytest                            # whole suite: 94 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -374,7 +374,53 @@ python scripts/inspect_diagram.py --knotinfo "L7a6{0}" --framings dot -2 --rando
 
 Move arguments add `CANCEL_12 dotted`, `CREATE_12 framing`, `CANCEL_23 label`, `CREATE_23`.
 
-### 9. Benchmark
+### 9. RL environment: reduce a Kirby diagram to the empty diagram
+
+`knotml.envs.KirbyEnv` (Gymnasium ≥ 1.4, registered as `knotml/KirbyReduce-v0`) starts from a Kirby
+diagram and ends (`terminated`) when no components are left: S³ for `calculus="3-manifold"`
+(`FramedLink`), B⁴ for `calculus="4-manifold"` (`Handlebody`; S⁴ with `closed=True`). The reward is
+left open: pass `reward_fn(transition)`, which sees the state before, the move, the state after,
+whether it was legal and whether the episode ended (the default returns 0).
+
+```python
+import gymnasium as gym
+import knotml.envs                                   # registers knotml/KirbyReduce-v0
+from knotml.envs import CandidateActions, KirbyEnv, ScrambleStart
+
+def reward(t):                                       # your choice; t.before, t.move, t.after, t.legal, t.terminated
+    return 1.0 if t.terminated else (-0.01 if t.legal else -0.1)
+
+env = KirbyEnv(calculus="4-manifold", max_crossings=64, max_components=8,
+               reward_fn=reward, start=ScrambleStart(n_moves=(2, 8)))
+obs, info = env.reset(seed=0)                        # info["scramble"]: the moves that built the start
+actions = env.legal_actions()                        # (L, 4) rows: kind, anchor a, anchor b, param
+obs, r, terminated, truncated, info = env.step(actions[0])   # info["legal"], info["move"]
+
+masked = CandidateActions(gym.make("knotml/KirbyReduce-v0"), max_actions=512)   # Discrete + action_masks()
+```
+
+- **Actions** are `MultiDiscrete([kinds, anchors, anchors, 3])`: `env.kinds[kind]`; anchors
+  `0 … 4·max_crossings − 1` are ports (sides of edges), the rest are components in label order;
+  `param` 0/1/2 means −1/0/+1 (sign of `R1_ADD`/`BLOW_UP`, framing of `CREATE_12`). `env.decode` and
+  `env.encode` convert to and from moves. An illegal action leaves the state unchanged
+  (`info["legal"] = False`); moves that would exceed `max_crossings`/`max_components` count as
+  illegal (a slide's size is predicted exactly).
+- **Legal actions**: `env.legal_actions()` / `env.legal_moves()` (O(n + output)), `env.is_legal(move)`
+  (O(1)). `CandidateActions` wraps the env as `Discrete(max_actions)` over the current legal moves,
+  with their encodings in `obs["candidates"]` and `action_masks()` for masked methods such as
+  sb3-contrib's `MaskablePPO`; when there are more, simplifying moves are kept and the rest sampled.
+- **Observation** (padded integer arrays): `nbr`, `sign`, `strand_component`, `side_face`,
+  `side_piece`, `component_type` (framed/dotted), `framing`, `crossingless`, `linking` (linking
+  matrix, framings on the diagonal), `n_crossings`, `n_components`. `env.kirby` is the live
+  `FramedLink`/`Handlebody`.
+- **Start states**: `reset(options={"diagram": H})` starts from your own diagram; otherwise
+  `ScrambleStart` applies random construction moves to the empty diagram (blow-ups or pair
+  creations, Reidemeister moves, slides; the kind is sampled first), so every start is solvable.
+  Pass any `start(env, rng)` callable for other distributions.
+- Episodes are truncated after `max_steps` (default 200). A step takes ~0.1 ms, listing all legal
+  actions 1–3 ms, for diagrams of 30–100 crossings.
+
+### 10. Benchmark
 
 ```bash
 python scripts/inspect_diagram.py --knotinfo 3_1 --random 100 --bench
@@ -398,7 +444,7 @@ src/knotml/
   kirby.py       FramedLink (3-manifolds): framings, blow-ups/downs, handle slides, surgery invariants
   handlebody.py  Handlebody (4-manifolds): dotted circles, 2-handles, slides, 1/2 and 2/3 cancellations
   visualization.py  spherogram drawings: SVG export and PLink viewer (optional deps)
-  envs/          Gymnasium environment (awaiting the action-space design)
+  envs/          Gymnasium environments: KirbyEnv (reduce a Kirby diagram to empty), UnknotEnv (stub)
   agents/        baseline agents
 scripts/
   inspect_diagram.py  load, random-walk, trace, visualize and benchmark a diagram
@@ -417,7 +463,8 @@ outputs/         generated traces and drawings (gitignored)
 Also refer to ``description.md``. 
 1. ~~Determine what knot representation to use~~ (PD codes; see `planning/core-design.md`)
 2. ~~Implement Reidemeister moves~~ (`knotml/core/moves.py`)
-3. Choose the action space and observation encoder, then finish `UnknotEnv`
+3. ~~RL environment for Kirby diagrams~~ (`knotml/envs/kirby_env.py`; reward still open);
+   `UnknotEnv` (unknotting) still awaits the same treatment
 4. ~~Basic visualization~~ (`knotml/visualization.py`); layouts that stay continuous across moves
 5. ~~Kirby calculus~~: 3-manifolds (`knotml/kirby.py`) and 4-manifolds with dotted circles and
-   handle cancellations (`knotml/handlebody.py`); next: an RL environment and action space for Kirby moves
+   handle cancellations (`knotml/handlebody.py`)

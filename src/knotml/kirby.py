@@ -158,6 +158,10 @@ class FramedLink:
     def framing(self, label: int) -> int:
         return self._framing[label]
 
+    def is_empty(self) -> bool:
+        """Whether no components are left (the empty diagram: S³)."""
+        return not self._framing
+
     @property
     def framings(self) -> dict[int, int]:
         return {lab: self._framing[lab] for lab in self.labels()}
@@ -267,10 +271,12 @@ class FramedLink:
         if move.kind == KirbyKind.BLOW_UP:
             label = max(self._framing, default=-1) + 1
             d._trivial.append(label)
+            d._invalidate()  # new stamp: the components changed
             self._framing[label] = move.sign
             return KirbyMove(KirbyKind.BLOW_DOWN, a=label)
         if move.kind == KirbyKind.BLOW_DOWN:
             d._trivial.remove(move.a)
+            d._invalidate()
             return KirbyMove(KirbyKind.BLOW_UP, sign=self._framing.pop(move.a))
         ki, kj = d.label_of_port(move.a), d.label_of_port(move.b)
         self.diagram, eps, twice_lk = band_slide(d, move.a, move.b, self._framing[kj])

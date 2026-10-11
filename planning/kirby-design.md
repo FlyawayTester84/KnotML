@@ -196,5 +196,6 @@ Strands that pass through a dotted circle must be slid off over K first.
 - Non-split blow-downs (Rolfsen twists) and general 1-handle slides (bands
   certified not to thread dotted disks) as macros.
 - Recognising cancelling pairs beyond the local meridian pattern.
-- An RL environment and action space for Kirby moves (on hold). Slides use the
-  same factored face/piece masks as `R2_ADD`, plus label and dotted masks.
+- RL environment: done in `src/knotml/envs/kirby_env.py` (see README section 9);
+  still open: the reward, start-state distributions beyond `ScrambleStart`
+  (e.g. known B⁴/S³ diagrams), and policies (GNN over ports/faces).
