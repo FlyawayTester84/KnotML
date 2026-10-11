@@ -18,7 +18,7 @@ from ..handlebody import Handlebody
 from ..notation import describe_move, move_crossings, move_labels, move_spec
 from ..visualization.pages import THEME_BUTTON, THEME_JS, component_notes, invariants_html, page_head, write_text
 from ..visualization.svg import to_svg
-from .session import PlaySession, components_of
+from .session import PlaySession, components_of, pd_summary
 
 __all__ = ["render_page", "write_page", "version_path", "observation_text"]
 
@@ -32,6 +32,7 @@ COMMANDS = [
     ("undo [N]", "take back the last N steps"),
     ("reset [SEED]", "start a new episode"),
     ("obs", "print the observation arrays"),
+    ("pd", "print the PD code, the framings in --pd order and a command to enter the diagram again"),
     ("save [PATH]", "write the episode as a step-through page"),
     ("open | help | quit", ""),
 ]
@@ -253,6 +254,7 @@ def render_page(session: PlaySession, version_file: str, version: int, max_rows:
 {"".join(f'<p class="hint">{line}</p>' for line in lines)}
 <div class="grid{" has-preview" if session.preview is not None else ""}">
 <div class="left"><div class="boards">{"".join(boards)}</div>
+{_pd_html(obj)}
 <p class="hint">Hover a move to circle its crossings and thicken its components; click it to copy its
 <code>step</code> command. Type commands in the terminal; this page reloads when the state changes.</p></div>
 <div class="right">
@@ -312,3 +314,18 @@ def _observation_html(session: PlaySession) -> str:
     return (f"{table or '<p class=hint>No components.</p>'}{link}"
             '<details id="raw-obs"><summary>Raw observation (used part of each array)</summary>'
             f"<pre>{raw}</pre></details>")
+
+
+def _pd_html(obj) -> str:
+    """The current PD code in a collapsible section, with the framings in ``--pd`` order."""
+    info = pd_summary(obj)
+    rows = [f"<code>{html.escape(str(info['pd']))}</code>"]
+    if info["labels"]:
+        names = " ".join(f"K{lab}" for lab in info["labels"])
+        rows.append(f"framings in <code>--pd</code> order ({names}): <code>{' '.join(info['framings'])}</code>")
+    if info["circles"]:
+        circles = ", ".join(f"K{lab} ({'dot' if f is None else f})" for lab, f in info["circles"].items())
+        rows.append(f"crossingless, not in the PD code: {html.escape(circles)}")
+    if info["args"]:
+        rows.append(f"enter it again: <code>python scripts/play_env.py {html.escape(info['args'])}</code>")
+    return f'<details id="pd"><summary>PD code</summary><p>{"<br>".join(rows)}</p></details>'

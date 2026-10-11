@@ -14,7 +14,7 @@ from ..handlebody import Handlebody
 from ..kirby import AnyMove
 from ..notation import move_spec, touched_crossings
 
-__all__ = ["PlaySession", "Record", "components_of", "example_reward", "load_reward"]
+__all__ = ["PlaySession", "Record", "components_of", "pd_summary", "example_reward", "load_reward"]
 
 
 @dataclass
@@ -38,6 +38,32 @@ class Record:
 def components_of(obj: Kirby) -> dict:
     """``{label: framing}``, with ``None`` for a dotted circle."""
     return obj.components if isinstance(obj, Handlebody) else obj.framings
+
+
+def pd_summary(obj: Kirby) -> dict:
+    """The PD code of ``obj`` and what is needed to enter it again with ``--pd``.
+
+    * ``pd``: :meth:`LinkDiagram.to_pd` (edges numbered 1, 2, ... along each component).
+    * ``labels`` and ``framings``: the components in the order ``--pd`` reads them back,
+      which is ``--framings`` order (``"dot"`` for a dotted circle).
+    * ``circles``: ``{label: framing}`` of the crossingless components, which a PD
+      code cannot hold.
+    * ``args``: ``--pd ... --framings ...`` (plus ``--four``/``--closed``), or
+      ``None`` when there are crossingless components or no crossings.
+    """
+    import shlex
+
+    d, comps = obj.diagram, components_of(obj)
+    labels = d.component_labels()
+    framings = ["dot" if comps[lab] is None else str(comps[lab]) for lab in labels]
+    circles = {lab: comps[lab] for lab in d.trivial_labels}
+    args = None
+    if labels and not circles:
+        pd = str([list(q) for q in d.to_pd()]).replace(" ", "")
+        args = f"--pd {shlex.quote(pd)} --framings {' '.join(framings)}"
+        if isinstance(obj, Handlebody):
+            args += " --closed" if obj.closed else (" --four" if "dot" not in framings else "")
+    return {"pd": d.to_pd(), "labels": labels, "framings": framings, "circles": circles, "args": args}
 
 
 class PlaySession:

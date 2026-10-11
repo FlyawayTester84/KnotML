@@ -8,7 +8,7 @@ from knotml import ALL_KINDS, FramedLink, Handlebody, KirbyKind, KirbyMove, Link
 from knotml.notation import describe_move, move_crossings, move_labels, move_spec, parse_move
 
 gym = pytest.importorskip("gymnasium")
-from knotml.envs import KirbyEnv  # noqa: E402
+from knotml.envs import KirbyEnv, ScrambleStart  # noqa: E402
 from knotml.play import Console, PlaySession, example_reward, load_reward  # noqa: E402
 
 L7A6 = [[8, 1, 9, 2], [10, 4, 11, 3], [14, 10, 7, 9], [12, 6, 13, 5], [2, 7, 3, 8], [4, 12, 5, 11], [6, 14, 1, 13]]
@@ -145,3 +145,30 @@ def test_page(tmp_path):
     console.session.step_index(int(np.argmax([m.kind == KirbyKind.HANDLE_SLIDE for m in console.session.moves()])))
     console.render()
     assert "last step: <code>HANDLE_SLIDE" in page.read_text()
+
+
+def test_pd_command_reenters_the_same_diagram():
+    import random
+
+    from knotml.cli import parse_framings
+    from knotml.play.session import pd_summary
+
+    rng = random.Random(4)
+    checked = 0
+    for seed in range(6):
+        session = PlaySession(KirbyEnv(), seed=seed)
+        for _ in range(rng.randrange(4)):
+            session.random_step()
+        state, info = session.state, pd_summary(session.state)
+        if info["args"] is None or state.diagram.is_pd_ambiguous():
+            continue  # crossingless components, or an orientation a PD code cannot record
+        again = Handlebody(LinkDiagram.from_pd(info["pd"]), parse_framings(info["framings"]))
+        assert again.canonical_key() == state.canonical_key()
+        assert "--pd" in info["args"] and "--framings" in info["args"]
+        checked += 1
+    assert checked >= 3
+    console = Console(PlaySession(KirbyEnv(), start=cancelling_pair()))
+    out, changed = console.execute("pd")
+    assert out.startswith("PD: [") and "framings, in --pd order (K0 K1): dot 0" in out and not changed
+    empty = Console(PlaySession(KirbyEnv(start=ScrambleStart(n_moves=(0, 0)))))
+    assert empty.execute("pd")[0] == "PD: [] (the empty diagram)"

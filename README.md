@@ -31,7 +31,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 129 passed, 1 skipped
+python -m pytest                            # whole suite: 130 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -450,6 +450,7 @@ kirby> step 3                # take it; also "3", "step CANCEL_12 2", or a raw v
 kirby> random 5 R2_REMOVE    # random legal moves (optionally of one kind)
 kirby> undo 2                # take back steps
 kirby> reset 7               # new episode, seed 7
+kirby> pd                    # the PD code, framings in --pd order, and a command to re-enter it
 kirby> save                  # outputs/play_episode.html: the episode as a step-through page
 kirby> quit
 ```
@@ -458,7 +459,9 @@ The page has the following parts:
 
 - **Status:** step, last reward, return, crossings and components against the capacity, and
   running / solved / truncated.
-- **Drawings:** the current drawing and the preview.
+- **Drawings:** the current drawing and the preview. Under them, a collapsible "PD code" section
+  shows the current PD code. It also lists the framings in the order `--pd` reads the components
+  back, and crossingless components, which a PD code cannot hold.
 - **Legal moves,** grouped by kind, each with its number, spec, action vector and description.
   Hover a row to circle its crossings and thicken its components on the drawing; click it to copy
   its `step` command.

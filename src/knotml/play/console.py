@@ -22,7 +22,7 @@ from ..kirby import KirbyKind
 from ..core import MoveKind
 from ..notation import describe_move, move_spec, parse_move
 from .page import COMMANDS, observation_text, write_page
-from .session import PlaySession, Record, load_reward
+from .session import PlaySession, Record, load_reward, pd_summary
 
 __all__ = ["Console", "main"]
 
@@ -166,6 +166,21 @@ class Console:
 
     def cmd_obs(self, args) -> tuple[str, bool]:
         return observation_text(self.session.obs), False
+
+    def cmd_pd(self, args) -> tuple[str, bool]:
+        info = pd_summary(self.session.state)
+        if not info["labels"] and not info["circles"]:
+            return "PD: [] (the empty diagram)", False
+        lines = [f"PD: {info['pd']}"]
+        if info["labels"]:
+            names = " ".join(f"K{lab}" for lab in info["labels"])
+            lines.append(f"framings, in --pd order ({names}): {' '.join(info['framings'])}")
+        if info["circles"]:
+            circles = ", ".join(f"K{lab} ({'dot' if f is None else f})" for lab, f in info["circles"].items())
+            lines.append(f"crossingless, not in the PD code: {circles}")
+        if info["args"]:
+            lines.append(f"enter it again: python scripts/play_env.py {info['args']}")
+        return "\n".join(lines), False
 
     def cmd_save(self, args) -> tuple[str, bool]:
         from ..visualization import write_steps_page
