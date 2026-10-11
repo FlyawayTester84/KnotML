@@ -34,8 +34,8 @@ from typing import Iterable, Mapping
 
 import numpy as np
 
-from .core import LinkDiagram
-from .interop import to_spherogram
+from ..core import LinkDiagram
+from ..interop import to_spherogram
 
 __all__ = [
     "layout",
@@ -103,7 +103,8 @@ def svg_css() -> str:
         ".knotml .kx{stroke:var(--muted);fill:var(--muted)}",
         ".knotml .bg{fill:var(--surface)}",
         ".knotml .rule{stroke:var(--rule)}",
-        ".knotml .mark{stroke:var(--ink)}",
+        ".knotml .mark,.knotml .spot.on{stroke:var(--ink)}",
+        ".knotml g.on{stroke-width:4.5px}",
         ".knotml .t{fill:var(--ink);stroke:var(--surface)}",
         ".knotml .t2{fill:var(--ink-2);stroke:var(--surface)}",
     ]
@@ -174,7 +175,7 @@ def _group(label: int, width: float) -> str:
     color = component_color(label)
     dash = " ".join(f"{u * width:.1f}" for u in _DASH[pattern])
     return (
-        f'<g class="{"kx" if slot is None else f"k{slot}"}" stroke="{color}" fill="{color}" '
+        f'<g class="{"kx" if slot is None else f"k{slot}"}" data-label="{label}" stroke="{color}" fill="{color}" '
         f'stroke-width="{width:.1f}" stroke-linecap="round" stroke-linejoin="round"'
         + (f' stroke-dasharray="{dash}">' if dash else ">")
     )
@@ -200,6 +201,7 @@ def to_svg(
     notes: Mapping[int, str] | None = None,
     legend: bool = True,
     style: bool = True,
+    spots: bool = False,
 ) -> str:
     """An SVG drawing of ``d``, ``size`` pixels wide.
 
@@ -217,6 +219,11 @@ def to_svg(
     ``K<label>`` and a legend sits below the drawing (``legend=False`` drops
     it).  ``style=False`` leaves out the ``<style>`` block, for pages that
     include :func:`svg_css` once.
+
+    For pages that point at parts of the drawing: every component group
+    carries ``data-label``, and ``spots=True`` adds a hidden ring per crossing
+    (``<circle class="spot" data-crossing="c">``).  Adding the class ``on`` to
+    either shows the ring or thickens the component.
     """
     components, crossings = layout(d) if d.n_crossings else ([], [])
     points = [p for _, comp in components for line in comp for p in line]
@@ -295,6 +302,13 @@ def to_svg(
             out.append("</g>")
             font = min(13.0, max(9.0, 0.75 * r))
             tags.append(_text(cx, cy + 0.35 * font, f"K{label}", font))
+    if spots:
+        for x, y, label in crossings:
+            px, py = xy((x, y))
+            out.append(
+                f'<circle class="spot" data-crossing="{label}" cx="{px:.1f}" cy="{py:.1f}" '
+                f'r="{max(11.0, 0.6 * scale) + 4:.1f}" fill="none" stroke="none" stroke-width="2.5"/>'
+            )
     marked = set(highlight)
     for x, y, label in crossings:
         if label in marked:

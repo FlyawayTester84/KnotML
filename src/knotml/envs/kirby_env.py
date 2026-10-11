@@ -148,11 +148,21 @@ class KirbyEnv(gym.Env):
         else:
             obj = self.start(self, self.np_random)
             info["scramble"] = list(getattr(self.start, "last_moves", []))
-        if obj.diagram.n_crossings > self.max_crossings or len(obj.labels()) > self.max_components:
-            raise ValueError(f"start diagram exceeds the capacity ({self.max_crossings} crossings, "
-                             f"{self.max_components} components)")
+        self._check_capacity(obj)
         self._obj, self._steps = obj, 0
         return self._observation(), {**info, **self._info(None, True)}
+
+    def restore(self, state: Kirby, steps: int = 0) -> dict[str, np.ndarray]:
+        """Continue the episode from a copy of ``state`` with ``steps`` steps already taken.
+
+        For undo and tree search: unlike :meth:`reset`, the random generator is
+        left alone.  Returns the observation.
+        """
+        obj = state.copy()
+        self._check_kind(obj)
+        self._check_capacity(obj)
+        self._obj, self._steps = obj, steps
+        return self._observation()
 
     def step(self, action):
         if self._obj is None:
@@ -185,6 +195,11 @@ class KirbyEnv(gym.Env):
     def kirby(self) -> Kirby:
         """The current framed link / handlebody (live object: copy it before changing it)."""
         return self._obj
+
+    @property
+    def steps(self) -> int:
+        """Steps taken in this episode (truncation comes at ``max_steps``)."""
+        return self._steps
 
     def decode(self, action: Sequence[int]) -> Optional[AnyMove]:
         """The move an action stands for, or ``None`` if it refers to nothing that exists."""
@@ -259,6 +274,11 @@ class KirbyEnv(gym.Env):
             raise TypeError(f"{self.calculus} calculus needs a {want.__name__}, got {type(obj).__name__}")
         if isinstance(obj, Handlebody) and obj.closed != self.closed:
             raise ValueError(f"handlebody has closed={obj.closed}, environment has closed={self.closed}")
+
+    def _check_capacity(self, obj: Kirby) -> None:
+        if obj.diagram.n_crossings > self.max_crossings or len(obj.labels()) > self.max_components:
+            raise ValueError(f"start diagram exceeds the capacity ({self.max_crossings} crossings, "
+                             f"{self.max_components} components)")
 
     def _port(self, i: int) -> Optional[int]:
         return i if 0 <= i < 4 * self._obj.diagram.n_crossings else None

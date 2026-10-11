@@ -30,7 +30,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 97 passed, 1 skipped
+python -m pytest                            # whole suite: 110 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -426,6 +426,47 @@ masked = CandidateActions(gym.make("knotml/KirbyReduce-v0"), max_actions=512)   
   Pass any `start(env, rng)` callable for other distributions.
 - Episodes are truncated after `max_steps` (default 200). A step takes ~0.1 ms, listing all legal
   actions 1–3 ms, for diagrams of 30–100 crossings.
+- `env.restore(state, steps)` continues from a saved state without reseeding, for undo or tree
+  search.
+
+#### Play it by hand
+
+`scripts/play_env.py` runs an episode from the terminal and mirrors it on a static HTML page
+(`outputs/play.html`, opened at start). The page reloads itself after every command:
+
+```bash
+python scripts/play_env.py                                         # 4-manifold, scrambled start
+python scripts/play_env.py --calculus 3 --seed 4 --reward example  # 3-manifold, illustrative reward
+python scripts/play_env.py --knotinfo "L2a1{1}" --framings dot 0   # your own start: a cancelling pair (B⁴)
+python scripts/play_env.py --help                                  # capacity, scramble length, page path, ...
+```
+
+```
+kirby> moves                 # a few legal moves of each kind, numbered as on the page
+kirby> moves CANCEL_12       # every legal move of one kind
+kirby> preview 3             # draw the result of move 3 beside the current diagram (state unchanged)
+kirby> step 3                # take it; also "3", "step CANCEL_12 2", or a raw vector "action 6 258 0 0"
+kirby> random 5 R2_REMOVE    # random legal moves (optionally of one kind)
+kirby> undo 2                # take back steps
+kirby> reset 7               # new episode, seed 7
+kirby> save                  # outputs/play_episode.html: the episode as a step-through page
+kirby> quit
+```
+
+The page has the following parts:
+
+- **Status:** step, last reward, return, crossings and components against the capacity, and
+  running / solved / truncated.
+- **Drawings:** the current drawing and the preview.
+- **Legal moves,** grouped by kind, each with its number, spec, action vector and description.
+  Hover a row to circle its crossings and thicken its components on the drawing; click it to copy
+  its `step` command.
+- **Observation:** the component table, the linking matrix and the raw arrays.
+- **History** of the episode.
+
+Illegal moves and raw actions count as steps, as they would for an agent. `--reward` takes `zero`
+(the default), `example` (an illustrative shaping, `knotml.play.example_reward`) or
+`module:function` for your own.
 
 ### 10. Benchmark
 
@@ -450,11 +491,20 @@ src/knotml/
   oracles.py     certified unknot test, genus, Jones, Alexander, signature (optional deps)
   kirby.py       FramedLink (3-manifolds): framings, blow-ups/downs, handle slides, surgery invariants
   handlebody.py  Handlebody (4-manifolds): dotted circles, 2-handles, slides, 1/2 and 2/3 cancellations
-  visualization.py  spherogram drawings: SVG export and PLink viewer (optional deps)
+  notation.py    move specs ("HANDLE_SLIDE 14 26"): parse, print, describe, locate on a drawing
+  cli.py         command-line options shared by the scripts (diagram source, framings)
+  visualization/ drawings and pages (drawing needs the optional deps)
+    svg.py         spherogram layout, SVG export, component styles, PLink viewer
+    pages.py       HTML pages: the step-through page and shared page styles
   envs/          Gymnasium environments: KirbyEnv (reduce a Kirby diagram to empty), UnknotEnv (stub)
+  play/          playing KirbyEnv by hand
+    session.py     an episode with undo, previews and a record
+    console.py     terminal commands and the play_env.py program
+    page.py        the static HTML page that follows the session
   agents/        baseline agents
 scripts/
   inspect_diagram.py  load, random-walk, trace, visualize and benchmark a diagram
+  play_env.py         play the Kirby environment in the terminal, watching it on an HTML page
 tests/           pytest suite (cross-checked against Regina when installed)
 planning/        research and design notes
 outputs/         generated traces and drawings (gitignored)
@@ -472,6 +522,6 @@ Also refer to ``description.md``.
 2. ~~Implement Reidemeister moves~~ (`knotml/core/moves.py`)
 3. ~~RL environment for Kirby diagrams~~ (`knotml/envs/kirby_env.py`; reward still open);
    `UnknotEnv` (unknotting) still awaits the same treatment
-4. ~~Basic visualization~~ (`knotml/visualization.py`); layouts that stay continuous across moves
+4. ~~Basic visualization~~ (`knotml/visualization/`); layouts that stay continuous across moves
 5. ~~Kirby calculus~~: 3-manifolds (`knotml/kirby.py`) and 4-manifolds with dotted circles and
    handle cancellations (`knotml/handlebody.py`)
