@@ -3,7 +3,7 @@
 A run lives in ``<output_dir>/<name>/``:
 
 * ``config.yaml``: the full configuration used;
-* ``metrics.csv``: one row per logged iteration;
+* ``metrics.csv``: one row per iteration;
 * ``eval.csv``: one row per evaluation;
 * ``checkpoints/``: ``latest.pt``, ``best.pt`` (best evaluation success) and the last
   ``keep_checkpoints`` periodic ``step_<n>.pt``;
@@ -30,6 +30,11 @@ from .envs import EnvSpec, env_spec, make_vector_env
 from .evaluate import evaluate
 from .policies import make_policy
 from .rollout import Collector
+
+try:
+    from tqdm.auto import tqdm
+except ImportError:  # the bar is optional
+    tqdm = None
 
 __all__ = ["Trainer", "resolve_device", "load_policy"]
 
@@ -75,6 +80,10 @@ def load_policy(path: str, device: Optional[torch.device] = None, **capacity: Op
     return policy.to(device or resolve_device(cfg.run.device)), cfg
 
 
+def _short(value: float, fmt: str = ".2f") -> str:
+    return format(value, fmt) if isinstance(value, float) and math.isfinite(value) else "-"
+
+
 class _Logger:
     def __init__(self, run_dir: Path, tensorboard: bool, resume: bool) -> None:
         self.run_dir = run_dir
@@ -118,6 +127,7 @@ class Trainer:
 
     def __init__(self, cfg: Config, resume: Optional[str] = None, quiet: bool = False) -> None:
         self.cfg, self.quiet = cfg, quiet
+        self._bar = None
         run = cfg.run
         random.seed(run.seed)
         np.random.seed(run.seed)
@@ -157,9 +167,9 @@ class Trainer:
         cfg, run = self.cfg, self.cfg.run
         recent: list[dict] = []
         metrics: dict = {}
-        if not self.quiet:
-            print(f"run {self.run_dir} | device {self.device} | {sum(p.numel() for p in self.policy.parameters()):,} "
+        self._say(f"run {self.run_dir} | device {self.device} | {sum(p.numel() for p in self.policy.parameters()):,} "
                   f"parameters | {self.cfg.env.num_envs} envs ({self.cfg.env.vectorization})")
+        self._bar = self._progress_bar()
         try:
             while self.global_step < run.total_timesteps:
                 start = time.perf_counter()
@@ -172,21 +182,44 @@ class Trainer:
                 if self.curriculum.update(episodes):
                     self.envs.call("set_scramble", *self.curriculum.range)
                     self.collector.version = self.curriculum.version
-                    if not self.quiet:
-                        print(f"curriculum: scramble {self.curriculum.lo}-{self.curriculum.hi}", flush=True)
                 row = self._train_row(metrics, episodes, recent, steps / (time.perf_counter() - start))
+                self.logger.write("metrics", row, self.global_step)
+                if self._bar is not None:
+                    self._bar.update(steps)
+                    self._bar.set_postfix(scramble=f"{self.curriculum.lo}-{self.curriculum.hi}",
+                                          success=_short(row["success"]), ret=_short(row["return"], "+.2f"),
+                                          refresh=False)
                 if self.iteration % max(1, run.log_every) == 0:
-                    self.logger.write("metrics", row, self.global_step)
-                    if not self.quiet:
-                        print(self._format(row), flush=True)
+                    self._say(self._format(row))
                 if cfg.eval.every and self.iteration % cfg.eval.every == 0:
                     self.run_evaluation()
                 if run.checkpoint_every and self.iteration % run.checkpoint_every == 0:
                     self.save(periodic=True)
         finally:
+            if self._bar is not None:
+                self._bar.close()
+                self._bar = None
             self.save()
             self.close()
         return metrics
+
+    def _progress_bar(self):
+        """A tqdm bar over the environment steps (``None`` when quiet, turned off or tqdm is missing).
+        With ``disable=None`` tqdm hides it when the output is not a terminal (a log file, ``| tee``)."""
+        run = self.cfg.run
+        if self.quiet or not run.progress or tqdm is None:
+            return None
+        return tqdm(total=run.total_timesteps, initial=min(self.global_step, run.total_timesteps), unit="step",
+                    unit_scale=True, dynamic_ncols=True, smoothing=0.1, desc=self.run_dir.name, disable=None)
+
+    def _say(self, text: str) -> None:
+        """Print a log line (above the progress bar, if there is one)."""
+        if self.quiet:
+            return
+        if getattr(self, "_bar", None) is not None:
+            tqdm.write(text)
+        else:
+            print(text, flush=True)
 
     def run_evaluation(self) -> dict:
         e = self.cfg.eval
@@ -196,11 +229,10 @@ class Trainer:
         row = {"iteration": self.iteration, "step": self.global_step, "scramble_lo": scramble[0],
                "scramble_hi": scramble[1], **result}
         self.logger.write("eval", row, self.global_step)
-        if not self.quiet:
-            steps = result["length_solved"]
-            solved = f"solved in {steps:.1f} steps" if math.isfinite(steps) else "none solved"
-            print(f"  eval scramble {scramble[0]}-{scramble[1]}: success {result['success']:.2f}, {solved}, "
-                  f"return {result['return']:+.3f}", flush=True)
+        steps = result["length_solved"]
+        solved = f"solved in {steps:.1f} steps" if math.isfinite(steps) else "none solved"
+        self._say(f"  eval scramble {scramble[0]}-{scramble[1]}: success {result['success']:.2f}, {solved}, "
+                  f"return {result['return']:+.3f}")
         # "best" compares like with like: success at the hardest level reached so far
         score = scramble[1] + result["success"]
         if score > self.best:

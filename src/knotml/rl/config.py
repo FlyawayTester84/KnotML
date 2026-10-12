@@ -26,7 +26,8 @@ class RunConfig:
     device: str = "auto"  # auto (cuda, else cpu), cuda, cuda:1, mps, cpu
     output_dir: str = "runs"
     total_timesteps: int = 1_000_000
-    log_every: int = 1  # iterations
+    log_every: int = 10  # iterations between log lines on the terminal (metrics.csv records every iteration)
+    progress: bool = True  # tqdm progress bar, shown when the output is a terminal
     checkpoint_every: int = 50  # iterations
     keep_checkpoints: int = 3  # step checkpoints kept besides latest.pt and best.pt
     tensorboard: bool = True  # also log to TensorBoard when it is installed

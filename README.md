@@ -31,7 +31,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 130 passed, 1 skipped
+python -m pytest                            # whole suite: 131 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -490,6 +490,17 @@ python scripts/evaluate_agent.py runs/kirby-ppo/checkpoints/best.pt --html outpu
 
 On a CUDA machine, install the PyTorch build for your CUDA version (see pytorch.org) before the
 `rl` extra. `--set section.key=value` overrides any entry of the YAML; unknown keys are errors.
+**Progress output.**
+
+- **Progress bar:** in a terminal, a bar shows steps, speed, time left, and the current scramble
+  range, success and return.
+- **Log lines:** one every `run.log_every` (10) iterations, plus an evaluation every `eval.every`
+  (25).
+- **Logs to a file:** when output goes to a file or a pipe (`nohup`, `| tee`), the bar switches
+  itself off.
+- **Turning it off:** `--set run.progress=false`.
+- **Full detail:** `metrics.csv` records every iteration either way.
+
 For long runs on a remote GPU server, follow `planning/remote-training.md`. It covers setup, the
 settings to change (including the curriculum), running detached, monitoring and bringing the
 agent back.
