@@ -254,3 +254,11 @@ def test_evaluate_script(tmp_path, capsys):
     checkpoint = tmp_path / "cli" / "checkpoints" / "latest.pt"
     assert evaluate_main([str(checkpoint), "--episodes", "4", "--scramble", "1", "1", "--device", "cpu"]) == 0
     assert "success" in capsys.readouterr().out
+
+
+def test_terminal_logs_every_log_every_and_csv_every_iteration(tmp_path, capsys):
+    trainer = Trainer(tiny(tmp_path, "run.log_every=2", "eval.every=0", "run.checkpoint_every=0"))
+    trainer.train()  # 64 steps = 4 iterations of 2 envs x 8 steps
+    lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("it ")]
+    assert [line.split("|")[0].split()[1] for line in lines] == ["2", "4"]
+    assert len((trainer.run_dir / "metrics.csv").read_text().strip().splitlines()) == 1 + 4

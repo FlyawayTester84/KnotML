@@ -97,8 +97,11 @@ python scripts/train_agent.py --set run.name=kind-gpu-1 run.total_timesteps=2000
 
 ## 6. While it runs
 
-- **Progress:** `tail -f train.log` shows one line per iteration and an evaluation every
-  `eval.every` (25) iterations. The same numbers are in `runs/<name>/metrics.csv` and `eval.csv`.
+- **Progress:** in a terminal (tmux/screen), a progress bar shows steps, speed, time left and the
+  current scramble range, success and return. A log line follows every `run.log_every` (10)
+  iterations, and an evaluation every `eval.every` (25). With `| tee train.log` or `nohup` the bar
+  switches itself off and only the log lines are written, so `tail -f train.log` stays readable.
+  `runs/<name>/metrics.csv` records every iteration, and `eval.csv` every evaluation.
 - **TensorBoard:** run `tensorboard --logdir runs --port 6006` on the server. On your laptop, run
   `ssh -L 6006:localhost:6006 you@server` and open `http://localhost:6006`.
 - **What to watch:**

@@ -11,8 +11,9 @@ run:
   seed: 0
   device: auto              # auto (CUDA if available, else CPU) | cuda | cuda:1 | mps | cpu
   output_dir: runs          # the run lives in runs/<name>/ (a suffix is added if it exists)
-  total_timesteps: 2000000  # environment steps, summed over all envs
-  log_every: 1              # iterations between metrics rows
+  total_timesteps: 100000   # environment steps, summed over all envs
+  log_every: 10             # iterations between log lines on the terminal (metrics.csv records every iteration)
+  progress: true            # tqdm progress bar; switches itself off when the output is a file or a pipe
   checkpoint_every: 50      # iterations between step_<n>.pt checkpoints (latest.pt is always kept)
   keep_checkpoints: 3       # step_<n>.pt files to keep
   tensorboard: true         # also write TensorBoard events if tensorboard is installed
@@ -44,9 +45,9 @@ reward:                     # zero | sparse | potential | my_reward | example | 
 curriculum:
   enabled: true
   window: 200               # episodes (all started at the current level) in the success rate
-  promote_at: 0.8           # success rate that raises the scramble maximum by `step`
+  promote_at: 0.9           # success rate that raises the scramble maximum by `step`
   step: 1
-  max_scramble: 12
+  max_scramble: 32
 
 eval:
   every: 25                 # iterations (0: never)
