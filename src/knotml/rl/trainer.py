@@ -16,6 +16,8 @@ import csv
 import dataclasses
 import math
 import random
+import signal
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -80,6 +82,21 @@ def load_policy(path: str, device: Optional[torch.device] = None, **capacity: Op
     return policy.to(device or resolve_device(cfg.run.device)), cfg
 
 
+class _Stop(BaseException):
+    """Raised by the SIGTERM handler to leave the training loop (a BaseException, so nothing swallows it)."""
+
+
+def _catch_sigterm():
+    """Turn SIGTERM into :class:`_Stop` (main thread only); returns the previous handler, or ``None``."""
+    if threading.current_thread() is not threading.main_thread():
+        return None
+
+    def handler(signum, frame):
+        raise _Stop()
+
+    return signal.signal(signal.SIGTERM, handler)
+
+
 def _short(value: float, fmt: str = ".2f") -> str:
     return format(value, fmt) if isinstance(value, float) and math.isfinite(value) else "-"
 
@@ -128,6 +145,7 @@ class Trainer:
     def __init__(self, cfg: Config, resume: Optional[str] = None, quiet: bool = False) -> None:
         self.cfg, self.quiet = cfg, quiet
         self._bar = None
+        self.stopped: Optional[str] = None  # why train() ended early (e.g. "SIGTERM"), None if it finished
         run = cfg.run
         random.seed(run.seed)
         np.random.seed(run.seed)
@@ -163,45 +181,62 @@ class Trainer:
     # ------------------------------------------------------------------
 
     def train(self) -> dict:
-        """Train until ``run.total_timesteps`` environment steps; returns the last metrics."""
-        cfg, run = self.cfg, self.cfg.run
-        recent: list[dict] = []
-        metrics: dict = {}
+        """Train until ``run.total_timesteps`` environment steps; returns the last metrics.
+
+        SIGTERM (sent by Slurm before a time limit or on preemption, and by ``kill``)
+        ends training after saving ``latest.pt``; :attr:`stopped` then says so, and
+        ``--resume`` continues from there.
+        """
         self._say(f"run {self.run_dir} | device {self.device} | {sum(p.numel() for p in self.policy.parameters()):,} "
                   f"parameters | {self.cfg.env.num_envs} envs ({self.cfg.env.vectorization})")
         self._bar = self._progress_bar()
+        self._metrics: dict = {}
+        previous = _catch_sigterm()
         try:
-            while self.global_step < run.total_timesteps:
-                start = time.perf_counter()
-                metrics = self.algorithm.iteration(self.global_step)
-                steps = int(metrics.pop("env_steps"))
-                self.global_step += steps
-                self.iteration += 1
-                episodes = self.collector.tracker.pop()
-                recent = (recent + episodes)[-max(1, cfg.curriculum.window):]
-                if self.curriculum.update(episodes):
-                    self.envs.call("set_scramble", *self.curriculum.range)
-                    self.collector.version = self.curriculum.version
-                row = self._train_row(metrics, episodes, recent, steps / (time.perf_counter() - start))
-                self.logger.write("metrics", row, self.global_step)
-                if self._bar is not None:
-                    self._bar.update(steps)
-                    self._bar.set_postfix(scramble=f"{self.curriculum.lo}-{self.curriculum.hi}",
-                                          success=_short(row["success"]), ret=_short(row["return"], "+.2f"),
-                                          refresh=False)
-                if self.iteration % max(1, run.log_every) == 0:
-                    self._say(self._format(row))
-                if cfg.eval.every and self.iteration % cfg.eval.every == 0:
-                    self.run_evaluation()
-                if run.checkpoint_every and self.iteration % run.checkpoint_every == 0:
-                    self.save(periodic=True)
+            self._loop()
+        except _Stop:
+            self.stopped = "SIGTERM"
         finally:
+            if previous is not None:
+                signal.signal(signal.SIGTERM, previous)
             if self._bar is not None:
                 self._bar.close()
                 self._bar = None
             self.save()
             self.close()
-        return metrics
+        if self.stopped:
+            self._say(f"stopped by {self.stopped} at step {self.global_step:,}; continue with "
+                      f"--resume {self.run_dir / 'checkpoints' / 'latest.pt'}")
+        return self._metrics
+
+    def _loop(self) -> None:
+        cfg, run = self.cfg, self.cfg.run
+        recent: list[dict] = []
+        while self.global_step < run.total_timesteps:
+            start = time.perf_counter()
+            metrics = self.algorithm.iteration(self.global_step)
+            steps = int(metrics.pop("env_steps"))
+            self.global_step += steps
+            self.iteration += 1
+            self._metrics = metrics
+            episodes = self.collector.tracker.pop()
+            recent = (recent + episodes)[-max(1, cfg.curriculum.window):]
+            if self.curriculum.update(episodes):
+                self.envs.call("set_scramble", *self.curriculum.range)
+                self.collector.version = self.curriculum.version
+            row = self._train_row(metrics, episodes, recent, steps / (time.perf_counter() - start))
+            self.logger.write("metrics", row, self.global_step)
+            if self._bar is not None:
+                self._bar.update(steps)
+                self._bar.set_postfix(scramble=f"{self.curriculum.lo}-{self.curriculum.hi}",
+                                      success=_short(row["success"]), ret=_short(row["return"], "+.2f"),
+                                      refresh=False)
+            if self.iteration % max(1, run.log_every) == 0:
+                self._say(self._format(row))
+            if cfg.eval.every and self.iteration % cfg.eval.every == 0:
+                self.run_evaluation()
+            if run.checkpoint_every and self.iteration % run.checkpoint_every == 0:
+                self.save(periodic=True)
 
     def _progress_bar(self):
         """A tqdm bar over the environment steps (``None`` when quiet, turned off or tqdm is missing).
@@ -273,7 +308,10 @@ class Trainer:
         self.collector.version = self.curriculum.version
 
     def close(self) -> None:
-        self.envs.close()
+        try:
+            self.envs.close()
+        except Exception:  # env workers already gone (e.g. killed by the same SIGTERM)
+            pass
         self.logger.close()
 
     # ------------------------------------------------------------------

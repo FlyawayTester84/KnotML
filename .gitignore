@@ -10,6 +10,7 @@ dist/
 
 # Virtual environments
 venv/
+.venv/
 .env
 
 # VS Code
@@ -24,3 +25,4 @@ venv/
 # Generated drawings and traces
 outputs/
 runs/
+logs/

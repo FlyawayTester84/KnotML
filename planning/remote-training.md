@@ -127,6 +127,91 @@ python scripts/solve_link.py --agent kind-gpu-1 --knotinfo "L2a1{1}" --framings 
 `models/<name>/` follows the layout of `models/ppo-small-cpu-kind/`. A short README there should
 record the setup and results.
 
+## On FASRC Cannon (Slurm)
+
+On Harvard's FASRC Cannon cluster, jobs go through Slurm
+(see [Running jobs](https://docs.rc.fas.harvard.edu/kb/running-jobs/)). `scripts/slurm/` has two
+batch scripts, run from the repository root:
+
+| Script | Partition | What it does |
+|---|---|---|
+| `smoke.sbatch` | `gpu_test` (≤ 8 CPUs and 64 GB per MIG GPU, 2 jobs, 12 h) | checks CUDA, runs `tests/test_rl.py` and a 20k-step run (≈ minutes) |
+| `train.sbatch` | `gpu` (A100, 3 days, not preempted); also works with `-p gpu_requeue` | 1 GPU, 16 CPUs (14 env processes), 64 GB, 2 days; the long-run settings of sections 3–4 |
+
+**Set up once, with uv.** FASRC's own docs use mamba; a uv environment works just as well. It is
+self-contained and brings its own Python, so no `python` module is needed. Follow FASRC's advice
+on where things go:
+
+- **Build on a compute node,** not a login node (login nodes also have no GPU, which the smoke test
+  checks).
+- **Keep the repository and its `.venv` on your lab's storage.** Home directories are slow for
+  environments with many small files, such as PyTorch's.
+- **Keep uv's cache off your home quota.** The CUDA PyTorch wheels alone are several GB.
+
+```bash
+salloc -p test -c 4 --mem=16G -t 0-02:00                      # a compute node for the install
+curl -LsSf https://astral.sh/uv/install.sh | sh               # uv into ~/.local/bin (not pip --user)
+# in ~/.bashrc, so every shell and job sees them (look up your lab's paths: ls /n/holylabs/LABS, ls /n/netscratch):
+export UV_CACHE_DIR=<scratch or lab storage>/uv-cache
+export UV_PYTHON_INSTALL_DIR=<lab storage>/uv-python
+export UV_LINK_MODE=copy                                      # cache and environment sit on different filesystems
+cd <lab storage> && git clone -b worker/runze git@github.com:FlyawayTester84/KnotML.git && cd KnotML
+uv venv --python 3.12 .venv
+uv pip install --python .venv/bin/python torch --index-url https://download.pytorch.org/whl/cu124   # ships CUDA
+uv pip install --python .venv/bin/python -e ".[rl,dev]"
+mkdir -p logs                                                 # Slurm writes logs/<job name>_<job id>.out here
+exit
+```
+
+The scripts read their defaults from these variables:
+
+- `VENV` (`.venv`, relative to the repository root);
+- `PY_MODULE` (none; set it only for an environment built on a module's Python);
+- for `train.sbatch` also `RUN_NAME` (`kind-gpu`), `TOTAL_STEPS` (20M) and `EXTRA_SET`, which
+  holds extra `--set` overrides.
+
+**Smoke test, then the run.**
+
+```bash
+sbatch scripts/slurm/smoke.sbatch                  # wait for "smoke test passed" in logs/knotml-smoke_<id>.out
+RUN_NAME=kind-gpu-1 sbatch scripts/slurm/train.sbatch
+sacct -u $USER                                     # state of your jobs
+scontrol show job <id>                             # why it is pending, and its estimated start
+tail -f logs/knotml-train_<id>.out                 # a line every 10 iterations, an evaluation every 25
+jobstats <id>                                      # CPU/GPU/memory use: the 16 CPUs should be busy
+scancel <id>                                       # stop it (the run saves latest.pt first)
+```
+
+**Continuing a run.**
+
+- **Time limits:** 180 s before the limit, Slurm sends SIGTERM (`--signal=B:TERM@180`). The
+  trainer saves `latest.pt` and exits.
+- **Resubmitting:** the same command, with the same `RUN_NAME`, continues from `latest.pt`. To go
+  further, raise the goal: `RUN_NAME=kind-gpu-1 TOTAL_STEPS=50000000 sbatch scripts/slurm/train.sbatch`.
+- **A fresh run** needs a new `RUN_NAME`. Run one job per `RUN_NAME` at a time.
+
+**Preemptible partition.**
+
+- **Submitting:** `sbatch -p gpu_requeue scripts/slurm/train.sbatch` may start sooner, but the job
+  can be preempted.
+- **What happens on preemption:** the trainer saves on SIGTERM, Slurm requeues the job, and the
+  requeued job finds `latest.pt` and continues.
+- **What can be lost:** at most the steps since the last checkpoint. The script sets
+  `run.checkpoint_every=10`, which is every 10 iterations, about 70k steps.
+
+**Other notes.**
+
+- Add `#SBATCH --account=<LAB>` (or `sbatch --account=<LAB> …`) to charge a specific lab's
+  fairshare.
+- Change resources on the command line, e.g. `sbatch -c 32 --mem=96G -t 3-00:00
+  scripts/slurm/train.sbatch`. The number of env processes follows `-c`.
+
+**Bring the agent back** from your laptop:
+
+```bash
+rsync -av --exclude 'step_*.pt' --exclude tb <you>@login.rc.fas.harvard.edu:KnotML/runs/kind-gpu-1/ models/kind-gpu-1/
+```
+
 ## Checklist
 
 - [ ] `torch.cuda.is_available()` is True; `tests/test_rl.py` passes
@@ -138,3 +223,5 @@ record the setup and results.
 - [ ] `curriculum.window` and `curriculum.promote_at` suit the episode throughput
 - [ ] the reward is the intended one (`reward.name`)
 - [ ] the run is inside tmux/screen/nohup/sbatch, logging to a file
+- [ ] on Cannon: `logs/` exists, the smoke job passed, and `RUN_NAME` is new (or deliberately reused
+      to continue a run)

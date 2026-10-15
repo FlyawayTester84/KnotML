@@ -262,3 +262,27 @@ def test_terminal_logs_every_log_every_and_csv_every_iteration(tmp_path, capsys)
     lines = [line for line in capsys.readouterr().out.splitlines() if line.startswith("it ")]
     assert [line.split("|")[0].split()[1] for line in lines] == ["2", "4"]
     assert len((trainer.run_dir / "metrics.csv").read_text().strip().splitlines()) == 1 + 4
+
+
+def test_sigterm_saves_a_checkpoint_and_the_run_resumes(tmp_path):
+    import os
+    import signal
+    import threading
+
+    cfg = tiny(tmp_path, "run.total_timesteps=1000000000", "eval.every=0", "run.checkpoint_every=0")
+    trainer = Trainer(cfg, quiet=True)
+    timer = threading.Timer(1.5, os.kill, (os.getpid(), signal.SIGTERM))  # like Slurm before a time limit
+    timer.start()
+    try:
+        trainer.train()
+    finally:
+        timer.cancel()
+    assert trainer.stopped == "SIGTERM" and 0 < trainer.global_step < cfg.run.total_timesteps
+    latest = trainer.run_dir / "checkpoints" / "latest.pt"
+    assert latest.exists()
+    assert signal.getsignal(signal.SIGTERM) is signal.SIG_DFL or callable(signal.getsignal(signal.SIGTERM))
+    more = dataclasses.replace(cfg, run=dataclasses.replace(cfg.run, total_timesteps=trainer.global_step + 32))
+    resumed = Trainer(more, resume=str(latest), quiet=True)
+    assert resumed.global_step == trainer.global_step
+    resumed.train()
+    assert resumed.global_step == trainer.global_step + 32 and resumed.stopped is None
