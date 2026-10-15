@@ -40,7 +40,8 @@ def train_main(argv: Optional[Sequence[str]] = None) -> int:
         parser.error(str(err))
     trainer = Trainer(cfg, resume=args.resume)
     trainer.train()
-    print(f"done: {trainer.global_step:,} steps; checkpoints in {trainer.run_dir / 'checkpoints'}")
+    if not trainer.stopped:
+        print(f"done: {trainer.global_step:,} steps; checkpoints in {trainer.run_dir / 'checkpoints'}")
     return 0
 
 

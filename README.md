@@ -31,7 +31,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 131 passed, 1 skipped
+python -m pytest                            # whole suite: 132 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
@@ -501,7 +501,11 @@ On a CUDA machine, install the PyTorch build for your CUDA version (see pytorch.
 - **Turning it off:** `--set run.progress=false`.
 - **Full detail:** `metrics.csv` records every iteration either way.
 
-For long runs on a remote GPU server, follow `planning/remote-training.md`. It covers setup, the
+For long runs on a remote GPU server, follow `planning/remote-training.md`. On Harvard's FASRC
+Cannon cluster, `scripts/slurm/smoke.sbatch` and `scripts/slurm/train.sbatch` submit the smoke test
+and the run, and the guide's Cannon section walks through them. A run stopped by a time limit,
+preemption or `scancel` saves `latest.pt` on SIGTERM. Resubmitting with the same `RUN_NAME`
+continues it. It covers setup, the
 settings to change (including the curriculum), running detached, monitoring and bringing the
 agent back.
 
@@ -653,6 +657,7 @@ scripts/
   train_agent.py      train an agent (configs/ppo.yaml)
   evaluate_agent.py   success rate of a checkpoint; agent episodes as HTML
   solve_link.py       run a trained agent on a given link (step limit, moves, replay command, HTML)
+  slurm/              batch scripts for the FASRC Cannon cluster: smoke.sbatch, train.sbatch
 configs/         training hyperparameters (YAML)
 models/          trained agents kept with the project: weights, config, curves
                  (ppo-small-cpu-kind/: kind-first; ppo-small-cpu/: flat)
