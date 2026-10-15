@@ -59,6 +59,25 @@ Keep `enabled: true`, `step: 1` and the starting range `env.scramble: [1, 3]`.
 - **Crossings and components:** a scramble never exceeds `env.max_crossings` or
   `env.max_components`; moves that do not fit are skipped. Small limits therefore cap the difficulty
   whatever `max_scramble` is. For example, 6 components allow only 3 handle pairs.
+- **When the limits fill up** (handle slides multiply crossings, so it happens early). Mean
+  crossings of fresh scrambles at each length:
+
+  | Limits (crossings / components) | 16 moves | 32 | 64 | 128 |
+  |---|---|---|---|---|
+  | 32 / 6 | 31 | 32 (full from ~20) | 32 | 32 |
+  | 64 / 10 | 44 | 64 (full) | 64 | 64 |
+  | 128 / 16 | 53 | 104 | 128 (full) | 128 |
+  | 256 / 24 | 54 | 131 | 240 | 256 (full) |
+
+  So a curriculum up to 32 needs about 64 / 10, up to 64 needs 128 / 16, and up to 128 needs
+  256 / 24.
+- **The cost of bigger limits:**
+  - **More legal moves:** an unfilled 256-crossing diagram can have ~15,000 legal moves to list
+    each step, before 512 are chosen.
+  - **Slower resets:** a 128-move start takes ~1 s to build (on a laptop), against 50 ms at 32
+    moves.
+  - **Slow promotion near the top:** each curriculum level needs `window` episodes at the
+    promotion rate, so the last levels take longest.
 - **Episode length:** keep `env.max_steps` at about 2–3 × the expected solution length. Scrambles
   of 12 moves were solved in about 8.
 
@@ -136,7 +155,7 @@ batch scripts, run from the repository root:
 | Script | Partition | What it does |
 |---|---|---|
 | `smoke.sbatch` | `gpu_test` (≤ 8 CPUs and 64 GB per MIG GPU, 2 jobs, 12 h) | checks CUDA, runs `tests/test_rl.py` and a 20k-step run (≈ minutes) |
-| `train.sbatch` | `gpu` (A100, 3 days, not preempted); also works with `-p gpu_requeue` | 1 GPU, 16 CPUs (14 env processes), 64 GB, 2 days; the long-run settings of sections 3–4 |
+| `train.sbatch` | `gpu` (A100, 3 days, not preempted); also works with `-p gpu_requeue` | 1 GPU, 32 CPUs (30 env processes), 128 GB, 3 days; curriculum to 128 with limits of 256 crossings, 24 components and 320 steps (section 4) |
 
 **Set up once, with uv.** FASRC's own docs use mamba; a uv environment works just as well. It is
 self-contained and brings its own Python, so no `python` module is needed. Follow FASRC's advice
@@ -167,8 +186,14 @@ The scripts read their defaults from these variables:
 
 - `VENV` (`.venv`, relative to the repository root);
 - `PY_MODULE` (none; set it only for an environment built on a module's Python);
-- for `train.sbatch` also `RUN_NAME` (`kind-gpu`), `TOTAL_STEPS` (20M) and `EXTRA_SET`, which
-  holds extra `--set` overrides.
+- for `train.sbatch` also:
+  - `RUN_NAME` (`kind-gpu`) and `TOTAL_STEPS` (20M);
+  - `MAX_SCRAMBLE` (128), `MAX_CROSSINGS` (256), `MAX_COMPONENTS` (24) and `MAX_STEPS` (320), the
+    limits of a new run. A continued run keeps the limits it started with;
+  - `EXTRA_SET`, which holds extra `--set` overrides.
+
+  A smaller setup with cheaper steps:
+  `MAX_SCRAMBLE=64 MAX_CROSSINGS=128 MAX_COMPONENTS=16 MAX_STEPS=160 sbatch -c 16 --mem=64G scripts/slurm/train.sbatch`.
 
 **Smoke test, then the run.**
 
@@ -178,7 +203,7 @@ RUN_NAME=kind-gpu-1 sbatch scripts/slurm/train.sbatch
 sacct -u $USER                                     # state of your jobs
 scontrol show job <id>                             # why it is pending, and its estimated start
 tail -f logs/knotml-train_<id>.out                 # a line every 10 iterations, an evaluation every 25
-jobstats <id>                                      # CPU/GPU/memory use: the 16 CPUs should be busy
+jobstats <id>                                      # CPU/GPU/memory use: the 32 CPUs should be busy
 scancel <id>                                       # stop it (the run saves latest.pt first)
 ```
 
@@ -203,8 +228,9 @@ scancel <id>                                       # stop it (the run saves late
 
 - Add `#SBATCH --account=<LAB>` (or `sbatch --account=<LAB> …`) to charge a specific lab's
   fairshare.
-- Change resources on the command line, e.g. `sbatch -c 32 --mem=96G -t 3-00:00
-  scripts/slurm/train.sbatch`. The number of env processes follows `-c`.
+- Change resources on the command line, e.g. `sbatch -c 48 --mem=192G scripts/slurm/train.sbatch`.
+  The number of env processes follows `-c`. `gpu` nodes have 64 cores and 4 GPUs, so asking for
+  more than 16 cores per GPU may wait longer in the queue.
 
 **Bring the agent back** from your laptop:
 
