@@ -30,9 +30,15 @@ def train_main(argv: Optional[Sequence[str]] = None) -> int:
 
     try:
         if args.resume:
+            import pickle
+
             import torch
 
-            saved = torch.load(args.resume, map_location="cpu", weights_only=False)["config"]
+            try:
+                saved = torch.load(args.resume, map_location="cpu", weights_only=False)["config"]
+            except (EOFError, RuntimeError, pickle.UnpicklingError) as err:
+                parser.error(f"cannot read {args.resume} ({type(err).__name__}: {err}): it is incomplete; to continue "
+                             f"from the last periodic checkpoint, copy the newest step_*.pt beside it over it")
             cfg = Config.from_dict(apply_overrides(saved, args.set))
         else:
             cfg = load_config(args.config, args.set)

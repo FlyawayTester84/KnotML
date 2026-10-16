@@ -15,6 +15,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import math
+import os
 import random
 import signal
 import threading
@@ -97,6 +98,39 @@ def _catch_sigterm():
     return signal.signal(signal.SIGTERM, handler)
 
 
+def _save_whole(state: dict, path: Path) -> None:
+    """``torch.save`` to a temporary file, then rename it to ``path``: a job killed mid-write leaves
+    the previous checkpoint in place instead of a truncated one that cannot be resumed."""
+    tmp = path.with_name(path.name + ".tmp")
+    torch.save(state, tmp)
+    os.replace(tmp, path)
+
+
+def _drop_rows_after(path: Path, step: int) -> None:
+    """Remove the rows of a run's CSV log written after ``step``. A run resumed from an earlier
+    checkpoint (a ``step_<n>.pt``, or ``latest.pt`` after a hard kill) redoes those iterations."""
+    if not path.exists():
+        return
+    with open(path, newline="", encoding="utf-8") as f:
+        rows = list(csv.reader(f))
+    if not rows or "step" not in rows[0]:
+        return
+    col = rows[0].index("step")
+
+    def keep(row: list) -> bool:
+        try:
+            return len(row) == len(rows[0]) and int(row[col]) <= step
+        except ValueError:  # a row cut off by a kill
+            return False
+
+    kept = [rows[0]] + [row for row in rows[1:] if keep(row)]
+    if len(kept) < len(rows):
+        tmp = path.with_name(path.name + ".tmp")
+        with open(tmp, "w", newline="", encoding="utf-8") as f:
+            csv.writer(f).writerows(kept)
+        os.replace(tmp, path)
+
+
 def _short(value: float, fmt: str = ".2f") -> str:
     return format(value, fmt) if isinstance(value, float) and math.isfinite(value) else "-"
 
@@ -172,6 +206,8 @@ class Trainer:
         if resume:
             self.run_dir = Path(resume).resolve().parent.parent
             self._load(resume)
+            for name in ("metrics", "eval"):
+                _drop_rows_after(self.run_dir / f"{name}.csv", self.global_step)
         else:
             self.run_dir = self._new_run_dir(Path(run.output_dir) / run.name)
         (self.run_dir / "checkpoints").mkdir(parents=True, exist_ok=True)
@@ -197,13 +233,17 @@ class Trainer:
         except _Stop:
             self.stopped = "SIGTERM"
         finally:
-            if previous is not None:
-                signal.signal(signal.SIGTERM, previous)
+            if previous is not None:  # a second SIGTERM must not kill the process halfway through the save
+                signal.signal(signal.SIGTERM, signal.SIG_IGN)
             if self._bar is not None:
                 self._bar.close()
                 self._bar = None
-            self.save()
-            self.close()
+            try:
+                self.save()
+            finally:
+                if previous is not None:
+                    signal.signal(signal.SIGTERM, previous)
+                self.close()
         if self.stopped:
             self._say(f"stopped by {self.stopped} at step {self.global_step:,}; continue with "
                       f"--resume {self.run_dir / 'checkpoints' / 'latest.pt'}")
@@ -290,9 +330,9 @@ class Trainer:
         }
         folder = self.run_dir / "checkpoints"
         path = folder / name
-        torch.save(state, path)
+        _save_whole(state, path)
         if periodic:
-            torch.save(state, folder / f"step_{self.global_step}.pt")
+            _save_whole(state, folder / f"step_{self.global_step}.pt")
             old = sorted(folder.glob("step_*.pt"), key=lambda p: int(p.stem.split("_")[1]))
             for p in old[: max(0, len(old) - self.cfg.run.keep_checkpoints)]:
                 p.unlink()

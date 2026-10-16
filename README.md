@@ -31,7 +31,7 @@ Run the install step before `source venv/bin/activate`: once the venv is active,
 ### 2. Run the tests
 
 ```bash
-python -m pytest                            # whole suite: 132 passed, 1 skipped
+python -m pytest                            # whole suite: 134 passed, 1 skipped
 python -m pytest tests/test_moves.py -v     # one file, verbose
 python -m pytest -k regina                  # tests whose name matches "regina"
 ```
