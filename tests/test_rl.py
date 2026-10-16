@@ -244,6 +244,41 @@ def test_training_checkpoints_resume_and_evaluation(tmp_path):
     assert frames[0][0] == "start" and len(frames) >= 2 and isinstance(solved, bool)
 
 
+def test_a_save_cut_short_keeps_the_previous_checkpoint(tmp_path, monkeypatch):
+    trainer = Trainer(tiny(tmp_path, "eval.every=0"), quiet=True)
+    trainer.train()
+    latest = trainer.run_dir / "checkpoints" / "latest.pt"
+    before = latest.read_bytes()
+
+    def killed_mid_write(state, path):
+        open(path, "wb").close()  # what a kill during torch.save leaves behind: a truncated file
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(torch, "save", killed_mid_write)
+    with pytest.raises(KeyboardInterrupt):
+        trainer.save()
+    assert latest.read_bytes() == before
+
+
+def test_resuming_from_an_earlier_checkpoint_drops_the_rows_it_redoes(tmp_path, capsys):
+    from knotml.rl.cli import train_main
+
+    cfg = tiny(tmp_path, "eval.every=1", "run.keep_checkpoints=2")
+    trainer = Trainer(cfg, quiet=True)
+    trainer.train()  # 4 iterations of 16 steps; checkpoints at 32 and 64
+    run = trainer.run_dir
+    (run / "checkpoints" / "latest.pt").write_bytes(b"")  # cut off by a kill (older code saved in place)
+    with pytest.raises(SystemExit):
+        train_main(["--resume", str(run / "checkpoints" / "latest.pt")])
+    assert "copy the newest step_*.pt" in capsys.readouterr().err
+
+    resumed = Trainer(cfg, resume=str(run / "checkpoints" / "step_32.pt"), quiet=True)
+    resumed.train()
+    for name in ("metrics", "eval"):
+        lines = (run / f"{name}.csv").read_text().strip().splitlines()
+        assert [line.split(",")[0] for line in lines] == ["iteration", "1", "2", "3", "4"]
+
+
 def test_evaluate_script(tmp_path, capsys):
     from knotml.rl.cli import evaluate_main, train_main
 

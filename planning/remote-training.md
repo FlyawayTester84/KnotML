@@ -214,6 +214,11 @@ scancel <id>                                       # stop it (the run saves late
 - **Resubmitting:** the same command, with the same `RUN_NAME`, continues from `latest.pt`. To go
   further, raise the goal: `RUN_NAME=kind-gpu-1 TOTAL_STEPS=50000000 sbatch scripts/slurm/train.sbatch`.
 - **A fresh run** needs a new `RUN_NAME`. Run one job per `RUN_NAME` at a time.
+- **An unreadable `latest.pt`** (`EOFError` on resume): it was cut off while being written, which
+  only code from before October 2026 could do (checkpoints are now written to a temporary file and
+  renamed). Copy the newest periodic checkpoint over it and resubmit:
+  `cp "$(ls -v runs/<RUN_NAME>/checkpoints/step_*.pt | tail -1)" runs/<RUN_NAME>/checkpoints/latest.pt`.
+  The resumed run drops the `metrics.csv` and `eval.csv` rows past that checkpoint, since it redoes them.
 
 **Preemptible partition.**
 
